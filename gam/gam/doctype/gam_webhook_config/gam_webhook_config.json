@@ -1,0 +1,108 @@
+{
+ "doctype": "DocType",
+ "name": "GAM Webhook Config",
+ "module": "GAM",
+ "engine": "InnoDB",
+ "fields": [
+  {
+   "fieldname": "webhook_email",
+   "fieldtype": "Data",
+   "label": "Webhook Email",
+   "description": "Inbox the Cloudflare Email Worker forwards to (e.g. gam@yourdomain.com)."
+  },
+  {
+   "fieldname": "webhook_secret",
+   "fieldtype": "Password",
+   "label": "Webhook Secret",
+   "description": "Shared secret verified via X-Webhook-Secret header."
+  },
+  {
+   "fieldname": "is_active",
+   "fieldtype": "Check",
+   "label": "Is Active",
+   "default": "1"
+  },
+  {
+   "fieldname": "last_received_at",
+   "fieldtype": "Datetime",
+   "label": "Last Received At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_status",
+   "fieldtype": "Data",
+   "label": "Last Status",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_received",
+   "fieldtype": "Int",
+   "label": "Total Received",
+   "default": "0",
+   "read_only": 1
+  },
+  {
+   "fieldname": "public_host",
+   "fieldtype": "Data",
+   "label": "Public Host",
+   "description": "Public hostname routed via the Cloudflare Tunnel (e.g. gam.example.com)."
+  },
+  {
+   "fieldname": "cloudflare_tunnel_token",
+   "fieldtype": "Password",
+   "label": "Cloudflare Tunnel Token"
+  },
+  {
+   "fieldname": "cloudflare_api_token",
+   "fieldtype": "Password",
+   "label": "Cloudflare API Token"
+  },
+  {
+   "fieldname": "cloudflare_account_id",
+   "fieldtype": "Data",
+   "label": "Cloudflare Account ID"
+  },
+  {
+   "fieldname": "cf_worker_deployed",
+   "fieldtype": "Check",
+   "label": "CF Worker Deployed",
+   "default": "0"
+  },
+  {
+   "fieldname": "cf_email_routing_done",
+   "fieldtype": "Check",
+   "label": "CF Email Routing Done",
+   "default": "0"
+  }
+ ],
+ "permissions": [
+  {
+   "role": "GAM Admin",
+   "read": 1,
+   "write": 1,
+   "create": 0,
+   "delete": 0,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  },
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 0,
+   "delete": 0,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  }
+ ],
+ "default_view": "Form",
+ "quick_entry": 0,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "track_changes": 1,
+ "issingle": 1
+}

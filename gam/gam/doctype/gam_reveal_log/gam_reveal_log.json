@@ -1,0 +1,88 @@
+{
+ "doctype": "DocType",
+ "name": "GAM Reveal Log",
+ "module": "GAM",
+ "engine": "InnoDB",
+ "fields": [
+  {
+   "fieldname": "action",
+   "fieldtype": "Select",
+   "label": "Action",
+   "options": "REVEAL\nCOPY",
+   "default": "REVEAL",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "viewed_by",
+   "fieldtype": "Link",
+   "label": "Viewed By",
+   "options": "User",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "target_doctype",
+   "fieldtype": "Data",
+   "label": "Target DocType",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "target_name",
+   "fieldtype": "Data",
+   "label": "Target Name",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "fieldname",
+   "fieldtype": "Data",
+   "label": "Fieldname",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "ip_address",
+   "fieldtype": "Data",
+   "label": "IP Address"
+  },
+  {
+   "fieldname": "user_agent",
+   "fieldtype": "Small Text",
+   "label": "User Agent"
+  },
+  {
+   "fieldname": "viewed_at",
+   "fieldtype": "Datetime",
+   "label": "Viewed At",
+   "in_list_view": 1
+  }
+ ],
+ "permissions": [
+  {
+   "role": "GAM Admin",
+   "read": 1,
+   "write": 0,
+   "create": 0,
+   "delete": 0,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  },
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 0,
+   "create": 0,
+   "delete": 0,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  }
+ ],
+ "default_view": "List",
+ "quick_entry": 0,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "track_changes": 0,
+ "read_only": 1,
+ "in_create": 1
+}

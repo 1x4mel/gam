@@ -1,0 +1,108 @@
+{
+ "doctype": "DocType",
+ "name": "GAM List Option",
+ "module": "GAM",
+ "engine": "InnoDB",
+ "fields": [
+  {
+   "fieldname": "category",
+   "fieldtype": "Select",
+   "label": "Category",
+   "reqd": 1,
+   "options": "Platform\nAccount Role\nAccount Status",
+   "in_list_view": 1,
+   "in_global_search": 1
+  },
+  {
+   "fieldname": "label",
+   "fieldtype": "Data",
+   "label": "Label",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_global_search": 1,
+   "description": "Display name shown in the UI (e.g. Battle.net, Booster, Banned)."
+  },
+  {
+   "fieldname": "value",
+   "fieldtype": "Data",
+   "label": "Value",
+   "reqd": 1,
+   "in_list_view": 1,
+   "description": "Stored value on records. Auto-derived from Label (UPPER_SNAKE) if left blank."
+  },
+  {
+   "fieldname": "code_platform",
+   "fieldtype": "Select",
+   "label": "Code Platform",
+   "options": "\nSTEAM\nBATTLENET\nPOE\nOTHER\nEPIC\nXBOX",
+   "description": "Used only for the Platform category: maps this platform to the code platform stored on GAM Email Code for matching. Leave blank to skip platform filtering (matches any code)."
+  },
+  {
+   "fieldname": "icon",
+   "fieldtype": "Data",
+   "label": "Icon",
+   "description": "Optional emoji shown next to the option."
+  },
+  {
+   "fieldname": "color",
+   "fieldtype": "Data",
+   "label": "Color",
+   "description": "Optional Tailwind color fragment (e.g. indigo, emerald)."
+  },
+  {
+   "fieldname": "sort_order",
+   "fieldtype": "Int",
+   "label": "Sort Order",
+   "default": "0"
+  },
+  {
+   "fieldname": "is_active",
+   "fieldtype": "Check",
+   "label": "Is Active",
+   "default": "1",
+   "in_list_view": 1
+  }
+ ],
+ "permissions": [
+  {
+   "role": "GAM Admin",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  },
+  {
+   "role": "GAM Member",
+   "read": 1,
+   "write": 0,
+   "create": 0,
+   "delete": 0,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  },
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  }
+ ],
+ "default_view": "List",
+ "quick_entry": 0,
+ "sort_field": "sort_order",
+ "sort_order": "ASC",
+ "track_changes": 1,
+ "title_field": "label",
+ "search_fields": "category,label,value"
+}

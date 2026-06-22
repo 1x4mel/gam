@@ -1,0 +1,111 @@
+{
+ "doctype": "DocType",
+ "name": "GAM Account Role Game",
+ "module": "GAM",
+ "engine": "InnoDB",
+ "fields": [
+  {
+   "fieldname": "account",
+   "fieldtype": "Link",
+   "label": "Account",
+   "reqd": 1,
+   "options": "GAM Account",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "search_index": 1,
+   "description": "The GAM Account this binding belongs to (identity/credentials live on the account)."
+  },
+  {
+   "fieldname": "role",
+   "fieldtype": "Data",
+   "label": "Account Role",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "search_index": 1,
+   "description": "Canonical Account Role value (e.g. BOOSTER) from GAM List Option. Required — no orphan/role-less rows."
+  },
+  {
+   "fieldname": "game",
+   "fieldtype": "Link",
+   "label": "Game",
+   "reqd": 1,
+   "options": "GAM Game",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "search_index": 1
+  },
+  {
+   "fieldname": "server",
+   "fieldtype": "Link",
+   "label": "Server",
+   "options": "GAM Game Server",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "is_main",
+   "fieldtype": "Check",
+   "label": "Is Main",
+   "in_list_view": 1,
+   "description": "At most one main game per account (enforced on write)."
+  },
+  {
+   "fieldname": "purchased_at",
+   "fieldtype": "Datetime",
+   "label": "Purchased At"
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Data",
+   "label": "Notes"
+  },
+  {
+   "fieldname": "dlcs",
+   "fieldtype": "Table",
+   "label": "DLCs",
+   "options": "GAM Account Game DLC"
+  }
+ ],
+ "permissions": [
+  {
+   "role": "GAM Admin",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  },
+  {
+   "role": "GAM Member",
+   "read": 1,
+   "write": 0,
+   "create": 0,
+   "delete": 0,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  },
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  }
+ ],
+ "default_view": "List",
+ "quick_entry": 0,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "track_changes": 1,
+ "title_field": "game",
+ "search_fields": "account,role,game"
+}

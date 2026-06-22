@@ -1,0 +1,115 @@
+{
+ "doctype": "DocType",
+ "name": "GAM Account Usage",
+ "module": "GAM",
+ "engine": "InnoDB",
+ "fields": [
+  {
+   "fieldname": "account",
+   "fieldtype": "Link",
+   "label": "Account",
+   "reqd": 1,
+   "options": "GAM Account",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "reqd": 1,
+   "options": "IN_USE\nRELEASED\nEXPIRED\nFORCE_RELEASED",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "used_by",
+   "fieldtype": "Link",
+   "label": "Used By",
+   "reqd": 1,
+   "options": "User",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "purpose",
+   "fieldtype": "Data",
+   "label": "Purpose",
+   "description": "Mục đích sử dụng (tùy chỉnh, datalist ở FE gợi ý preset).",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "order_ref",
+   "fieldtype": "Data",
+   "label": "Order Ref"
+  },
+  {
+   "fieldname": "started_at",
+   "fieldtype": "Datetime",
+   "label": "Started At",
+   "reqd": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "lease_until",
+   "fieldtype": "Datetime",
+   "label": "Lease Until",
+   "reqd": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "ended_at",
+   "fieldtype": "Datetime",
+   "label": "Ended At"
+  },
+  {
+   "fieldname": "end_reason",
+   "fieldtype": "Select",
+   "label": "End Reason",
+   "options": "DONE\nCANCELLED\nTIMEOUT\nFORCE_RELEASED\nERROR"
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes"
+  }
+ ],
+ "permissions": [
+  {
+   "role": "GAM Admin",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  },
+  {
+   "role": "GAM Member",
+   "read": 1,
+   "write": 0,
+   "create": 0,
+   "delete": 0,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  },
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  }
+ ],
+ "default_view": "List",
+ "quick_entry": 0,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "track_changes": 1,
+ "search_fields": "account,used_by,status"
+}

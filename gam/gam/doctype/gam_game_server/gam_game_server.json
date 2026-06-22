@@ -1,0 +1,82 @@
+{
+ "doctype": "DocType",
+ "name": "GAM Game Server",
+ "module": "GAM",
+ "engine": "InnoDB",
+ "fields": [
+  {
+   "fieldname": "game",
+   "fieldtype": "Link",
+   "label": "Game",
+   "reqd": 1,
+   "options": "GAM Game",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "server_name",
+   "fieldtype": "Data",
+   "label": "Server Name",
+   "reqd": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "region",
+   "fieldtype": "Select",
+   "label": "Region (legacy)",
+   "options": "AMERICAS\nASIA\nEUROPE\nGLOBAL"
+  },
+  {
+   "fieldname": "is_active",
+   "fieldtype": "Check",
+   "label": "Is Active",
+   "default": "1",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Data",
+   "label": "Notes"
+  }
+ ],
+ "permissions": [
+  {
+   "role": "GAM Admin",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  },
+  {
+   "role": "GAM Member",
+   "read": 1,
+   "write": 0,
+   "create": 0,
+   "delete": 0,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  },
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  }
+ ],
+ "default_view": "List",
+ "quick_entry": 0,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "track_changes": 1,
+ "search_fields": "game,server_name"
+}

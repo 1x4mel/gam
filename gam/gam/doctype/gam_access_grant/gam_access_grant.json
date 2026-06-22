@@ -1,0 +1,115 @@
+{
+ "doctype": "DocType",
+ "name": "GAM Access Grant",
+ "module": "GAM",
+ "engine": "InnoDB",
+ "fields": [
+  {
+   "fieldname": "user",
+   "fieldtype": "Link",
+   "label": "User",
+   "reqd": 1,
+   "options": "User",
+   "in_list_view": 1,
+   "in_global_search": 1,
+   "description": "Người dùng được cấp quyền."
+  },
+  {
+   "fieldname": "app",
+   "fieldtype": "Data",
+   "label": "App",
+   "reqd": 1,
+   "default": "GAM",
+   "in_list_view": 1,
+   "description": "Ứng dụng sở hữu quyền này (GAM, CURRENCY_TRADE, HR, ...). Một doctype dùng chung cho mọi custom app."
+  },
+  {
+   "fieldname": "scope",
+   "fieldtype": "Select",
+   "label": "Scope",
+   "reqd": 1,
+   "options": "\nROLE_GAME\nSECTION",
+   "in_list_view": 1,
+   "description": "Loại scope: ROLE_GAME = tài khoản theo role+game; SECTION = mục điều hướng."
+  },
+  {
+   "fieldname": "key",
+   "fieldtype": "Data",
+   "label": "Key",
+   "reqd": 1,
+   "in_list_view": 1,
+   "in_global_search": 1,
+   "description": "Định danh scoped. Vd ROLE_GAME: 'BOOSTER|c8iv66edk6'; SECTION: 'active', 'accounts', 'emails'."
+  },
+  {
+   "fieldname": "value",
+   "fieldtype": "Data",
+   "label": "Value",
+   "description": "Giá trị phụ (vd mức quyền 'view'/'use'). Tuỳ chọn, để trống = mặc định."
+  },
+  {
+   "fieldname": "granted",
+   "fieldtype": "Check",
+   "label": "Granted",
+   "default": "1",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "granted_by",
+   "fieldtype": "Link",
+   "label": "Granted By",
+   "options": "User",
+   "read_only": 1,
+   "no_copy": 1
+  },
+  {
+   "fieldname": "granted_on",
+   "fieldtype": "Datetime",
+   "label": "Granted On",
+   "read_only": 1,
+   "no_copy": 1
+  }
+ ],
+ "permissions": [
+  {
+   "role": "GAM Admin",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  },
+  {
+   "role": "GAM Member",
+   "read": 1,
+   "write": 0,
+   "create": 0,
+   "delete": 0,
+   "email": 0,
+   "print": 0,
+   "report": 0,
+   "share": 0
+  },
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  }
+ ],
+ "default_view": "List",
+ "quick_entry": 0,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "track_changes": 1,
+ "title_field": "key",
+ "search_fields": "user,app,scope,key"
+}

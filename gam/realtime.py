@@ -1,0 +1,62 @@
+import frappe
+
+
+def emit_new_code(platform=None, email_code=None):
+	"""Broadcast that a fresh verification code landed.
+
+	The gam-ui SPA listens on `gam_new_code` (see composables/useRealtime.js)
+	and shows a toast + refreshes the dashboard.
+	"""
+	try:
+		frappe.publish_realtime(
+			"gam_new_code",
+			{"platform": platform, "code_platform": platform, "email_code": email_code},
+			broadcast=True,
+		)
+	except Exception:
+		frappe.log_error("gam: emit_new_code failed")
+
+
+def emit_account_changed(account, action="update"):
+	"""Broadcast that a GAM Account's usage/lock/notes changed.
+
+	`action` is one of: ``checkin`` (lease started), ``checkout`` (lease ended /
+	forced), ``note`` (collaborative note added), ``update`` (catch-all).
+
+	The gam-ui SPA listens on `gam_account_changed`:
+	  - AccountDetailView refreshes itself + activity + notes when its account matches.
+	  - AccountListView re-evaluates lock/dim state + rested badges.
+	  - AppLayout / useActiveUsage refreshes the "Đang hoạt động" tab + sidebar badge.
+	"""
+	if not account:
+		return
+	try:
+		frappe.publish_realtime(
+			"gam_account_changed",
+			{"account": account, "action": action, "user": frappe.session.user},
+			broadcast=True,
+		)
+	except Exception:
+		frappe.log_error("gam: emit_account_changed failed")
+
+
+def emit_role_sections_changed():
+	"""Broadcast that the dynamic (role, game) section catalog changed.
+
+	Dedicated to the sidebar's Trader/Booster/Item section subsystem so it does
+	NOT piggyback on ``gam_account_changed`` (which also fires for password /
+	status / usage / notes edits that do not affect sections). The gam-ui
+	``AppLayout`` listens on ``gam_role_sections_changed`` and re-runs
+	``loadGamesByRole(true)`` only when a role/game binding actually changed.
+
+	Fired by: ``save_account`` (when a ``role_games`` payload is sent),
+	``add_account_role_game``, ``remove_account_role_game`` and ``delete_account``.
+	"""
+	try:
+		frappe.publish_realtime(
+			"gam_role_sections_changed",
+			{"user": frappe.session.user},
+			broadcast=True,
+		)
+	except Exception:
+		frappe.log_error("gam: emit_role_sections_changed failed")

@@ -1,0 +1,97 @@
+{
+ "doctype": "DocType",
+ "name": "GAM Email",
+ "module": "GAM",
+ "engine": "InnoDB",
+ "fields": [
+  {
+   "fieldname": "address",
+   "fieldtype": "Data",
+   "label": "Address",
+   "reqd": 1,
+   "unique": 1,
+   "in_global_search": 1
+  },
+  {
+   "fieldname": "email_password",
+   "fieldtype": "Password",
+   "label": "Email Password",
+   "description": "Frappe encrypts this on save."
+  },
+  {
+   "fieldname": "provider",
+   "fieldtype": "Select",
+   "label": "Provider",
+   "options": "Gmail\nOutlook\nProton\nYahoo\nOther"
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes"
+  },
+  {
+   "fieldname": "is_active",
+   "fieldtype": "Check",
+   "label": "Is Active",
+   "default": "1",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "forward_verified",
+   "fieldtype": "Check",
+   "label": "Forward Verified",
+   "default": "0",
+   "description": "Admin marks when email forwarding to the Cloudflare inbox is set up."
+  },
+  {
+   "fieldname": "recovery_emails",
+   "fieldtype": "Table",
+   "label": "Recovery Emails",
+   "options": "GAM Email Recovery"
+  }
+ ],
+ "permissions": [
+  {
+   "role": "GAM Admin",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  },
+  {
+   "role": "GAM Member",
+   "read": 1,
+   "write": 0,
+   "create": 0,
+   "delete": 0,
+   "email": 0,
+   "print": 0,
+   "report": 0,
+   "share": 0,
+   "if_owner": 0,
+   "permlevel": 0
+  },
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  }
+ ],
+ "default_view": "List",
+ "quick_entry": 0,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "track_changes": 1,
+ "title_field": "address",
+ "search_fields": "address,provider"
+}

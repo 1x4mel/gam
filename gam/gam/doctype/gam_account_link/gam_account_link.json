@@ -1,0 +1,89 @@
+{
+ "doctype": "DocType",
+ "name": "GAM Account Link",
+ "module": "GAM",
+ "engine": "InnoDB",
+ "fields": [
+  {
+   "fieldname": "source_account",
+   "fieldtype": "Link",
+   "label": "Source Account",
+   "reqd": 1,
+   "options": "GAM Account",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "target_account",
+   "fieldtype": "Link",
+   "label": "Target Account",
+   "reqd": 1,
+   "options": "GAM Account",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "link_type",
+   "fieldtype": "Data",
+   "label": "Link Type",
+   "description": "e.g. STEAM_TO_BNET"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "ACTIVE\nEXPIRED\nREVOKED",
+   "default": "ACTIVE",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "expiry_date",
+   "fieldtype": "Datetime",
+   "label": "Expiry Date",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Data",
+   "label": "Notes"
+  }
+ ],
+ "permissions": [
+  {
+   "role": "GAM Admin",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  },
+  {
+   "role": "GAM Member",
+   "read": 1,
+   "write": 0,
+   "create": 0,
+   "delete": 0,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  },
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  }
+ ],
+ "default_view": "List",
+ "quick_entry": 0,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "track_changes": 1
+}

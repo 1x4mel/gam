@@ -1,0 +1,114 @@
+{
+ "doctype": "DocType",
+ "name": "GAM Account",
+ "module": "GAM",
+ "engine": "InnoDB",
+ "fields": [
+  {
+   "fieldname": "platform",
+   "fieldtype": "Data",
+   "label": "Platform",
+   "reqd": 1,
+   "in_list_view": 1,
+   "description": "Configurable via GAM List Option (category=Platform)."
+  },
+  {
+   "fieldname": "username",
+   "fieldtype": "Data",
+   "label": "Username",
+   "reqd": 1,
+   "in_global_search": 1
+  },
+  {
+   "fieldname": "account_password",
+   "fieldtype": "Password",
+   "label": "Account Password"
+  },
+  {
+   "fieldname": "totp_secret",
+   "fieldtype": "Password",
+   "label": "TOTP Secret",
+   "description": "Secret key for 2FA / Authenticator app."
+  },
+  {
+   "fieldname": "email",
+   "fieldtype": "Link",
+   "label": "Email",
+   "reqd": 1,
+   "options": "GAM Email",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "source",
+   "fieldtype": "Data",
+   "label": "Source"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Data",
+   "label": "Status",
+   "default": "ACTIVE",
+   "in_list_view": 1,
+   "description": "Configurable via GAM List Option (category=Account Status)."
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes"
+  },
+  {
+   "fieldname": "account_created_at",
+   "fieldtype": "Datetime",
+   "label": "Account Created At"
+  },
+  {
+   "fieldname": "purchased_at",
+   "fieldtype": "Datetime",
+   "label": "Purchased At"
+  }
+ ],
+ "permissions": [
+  {
+   "role": "GAM Admin",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  },
+  {
+   "role": "GAM Member",
+   "read": 1,
+   "write": 0,
+   "create": 0,
+   "delete": 0,
+   "email": 0,
+   "print": 0,
+   "report": 0,
+   "share": 0,
+   "if_owner": 0,
+   "permlevel": 0
+  },
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  }
+ ],
+ "default_view": "List",
+ "quick_entry": 0,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "track_changes": 1,
+ "title_field": "username",
+ "search_fields": "username,email,platform"
+}

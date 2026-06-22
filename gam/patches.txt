@@ -4,3 +4,7 @@
 
 [post_model_sync]
 # Patches added in this section will be executed after doctypes are migrated
+gam.patches.seed_list_options
+gam.patches.backfill_game_server_name
+gam.patches.ensure_account_role_roles
+gam.patches.migrate_account_role_game

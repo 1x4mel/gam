@@ -1,0 +1,100 @@
+{
+ "doctype": "DocType",
+ "name": "GAM Code Pattern",
+ "module": "GAM",
+ "engine": "InnoDB",
+ "fields": [
+  {
+   "fieldname": "platform",
+   "fieldtype": "Select",
+   "label": "Platform",
+   "options": "STEAM\nBATTLENET\nPOE\nOTHER",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "game",
+   "fieldtype": "Link",
+   "label": "Game",
+   "options": "GAM Game",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "sender_pattern",
+   "fieldtype": "Data",
+   "label": "Sender Pattern",
+   "description": "Regex matched against sender email."
+  },
+  {
+   "fieldname": "subject_keywords",
+   "fieldtype": "Data",
+   "label": "Subject Keywords",
+   "description": "Comma-separated."
+  },
+  {
+   "fieldname": "code_regex",
+   "fieldtype": "Data",
+   "label": "Code Regex",
+   "description": "Regex; group 1 = the code."
+  },
+  {
+   "fieldname": "ttl_minutes",
+   "fieldtype": "Int",
+   "label": "TTL (minutes)",
+   "default": "15"
+  },
+  {
+   "fieldname": "is_active",
+   "fieldtype": "Check",
+   "label": "Is Active",
+   "default": "1",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "priority",
+   "fieldtype": "Int",
+   "label": "Priority",
+   "default": "0"
+  }
+ ],
+ "permissions": [
+  {
+   "role": "GAM Admin",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  },
+  {
+   "role": "GAM Member",
+   "read": 1,
+   "write": 0,
+   "create": 0,
+   "delete": 0,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  },
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  }
+ ],
+ "default_view": "List",
+ "quick_entry": 0,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "track_changes": 1,
+ "search_fields": "platform"
+}

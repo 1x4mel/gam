@@ -125,6 +125,18 @@ app_license = "mit"
 # 	"Event": "frappe.desk.doctype.event.event.has_permission",
 # }
 
+# ===== GAM access-grant ORM scoping (P1.1) =====
+# Enforce L2 ROLE_GAME visibility at the ORM layer too (the API surface already
+# gates via gam.api.get_accounts_list). Default OFF — flip gam_enforce_account_pqc=1
+# in site_config after smoke-testing with a real member. See gam/permissions.py.
+permission_query_conditions = {
+	"GAM Account": "gam.permissions.get_pqc_for_gam_account",
+	"GAM Account Role Game": "gam.permissions.get_pqc_for_gam_account_role_game",
+}
+has_permission = {
+	"GAM Account": "gam.permissions.has_perm_gam_account",
+}
+
 # DocType Class
 # ---------------
 # Override standard doctype classes
@@ -247,3 +259,29 @@ app_license = "mit"
 # List of apps whose translatable strings should be excluded from this app's translations.
 # ignore_translatable_strings_from = []
 
+# ===== GAM CUSTOM HOOKS (managed) =====
+
+# Install lifecycle: roles created before sync, seed after sync.
+before_install = "gam.setup.before_install"
+after_install = "gam.setup.after_install"
+
+# App switcher (co-tenancy): GAM tile shown only to GAM roles / Administrator.
+add_to_apps_screen = [
+	{
+		"name": "gam",
+		"logo": "/assets/gam/images/gam-logo.svg",
+		"title": "GAM",
+		"route": "/gam-ui/",
+		"has_permission": "gam.permission.has_app_permission",
+	},
+]
+
+# Scheduled jobs
+scheduler_events = {
+	"all": [
+		"gam.tasks.force_release_leases",
+	],
+	"cron": {
+		"*/5 * * * *": ["gam.tasks.expire_email_codes"],
+	},
+}

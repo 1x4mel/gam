@@ -1,0 +1,88 @@
+{
+ "doctype": "DocType",
+ "name": "GAM Account Game",
+ "module": "GAM",
+ "engine": "InnoDB",
+ "fields": [
+  {
+   "fieldname": "game",
+   "fieldtype": "Link",
+   "label": "Game",
+   "reqd": 1,
+   "options": "GAM Game",
+   "columns": 2,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "server",
+   "fieldtype": "Link",
+   "label": "Server",
+   "options": "GAM Game Server",
+   "columns": 2,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "is_main",
+   "fieldtype": "Check",
+   "label": "Is Main",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "purchased_at",
+   "fieldtype": "Datetime",
+   "label": "Purchased At"
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Data",
+   "label": "Notes"
+  },
+  {
+   "fieldname": "dlcs",
+   "fieldtype": "Table",
+   "label": "DLCs",
+   "options": "GAM Account Game DLC"
+  }
+ ],
+ "permissions": [
+  {
+   "role": "GAM Admin",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  },
+  {
+   "role": "GAM Member",
+   "read": 1,
+   "write": 0,
+   "create": 0,
+   "delete": 0,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  },
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  }
+ ],
+ "default_view": "List",
+ "quick_entry": 0,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "track_changes": 0,
+ "istable": 1
+}

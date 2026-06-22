@@ -1,0 +1,150 @@
+{
+ "doctype": "DocType",
+ "name": "GAM Email Inbound Log",
+ "module": "GAM",
+ "engine": "InnoDB",
+ "fields": [
+  {
+   "fieldname": "email_account",
+   "fieldtype": "Data",
+   "label": "Email Account",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "gam_email",
+   "fieldtype": "Link",
+   "label": "GAM Email",
+   "options": "GAM Email",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "email_from",
+   "fieldtype": "Data",
+   "label": "From",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "email_subject",
+   "fieldtype": "Data",
+   "label": "Subject",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "message_id",
+   "fieldtype": "Data",
+   "label": "Message ID"
+  },
+  {
+   "fieldname": "received_at",
+   "fieldtype": "Datetime",
+   "label": "Received At",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "fetched_at",
+   "fieldtype": "Datetime",
+   "label": "Fetched At"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "label": "Status",
+   "options": "OK\nNO_MATCH\nDUPLICATE\nPARSE_ERROR\nINACTIVE\nPAYLOAD_TRUNCATED",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "matched_platform",
+   "fieldtype": "Data",
+   "label": "Matched Platform"
+  },
+  {
+   "fieldname": "matched_pattern",
+   "fieldtype": "Link",
+   "label": "Matched Pattern",
+   "options": "GAM Code Pattern"
+  },
+  {
+   "fieldname": "email_code",
+   "fieldtype": "Link",
+   "label": "Email Code",
+   "options": "GAM Email Code"
+  },
+  {
+   "fieldname": "raw_snippet",
+   "fieldtype": "Small Text",
+   "label": "Raw Snippet"
+  },
+  {
+   "fieldname": "error_message",
+   "fieldtype": "Small Text",
+   "label": "Error Message"
+  },
+  {
+   "fieldname": "detected_platform",
+   "fieldtype": "Data",
+   "label": "Detected Platform"
+  },
+  {
+   "fieldname": "original_to",
+   "fieldtype": "Data",
+   "label": "Original To"
+  },
+  {
+   "fieldname": "resolved_via",
+   "fieldtype": "Data",
+   "label": "Resolved Via"
+  },
+  {
+   "fieldname": "gam_email_address",
+   "fieldtype": "Data",
+   "label": "GAM Email Address"
+  },
+  {
+   "fieldname": "ignored",
+   "fieldtype": "Check",
+   "label": "Ignored",
+   "default": "0"
+  },
+  {
+   "fieldname": "email_body",
+   "fieldtype": "Long Text",
+   "label": "Email Body"
+  },
+  {
+   "fieldname": "email_html",
+   "fieldtype": "Long Text",
+   "label": "Email HTML"
+  }
+ ],
+ "permissions": [
+  {
+   "role": "GAM Admin",
+   "read": 1,
+   "write": 0,
+   "create": 0,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  },
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 0,
+   "create": 0,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  }
+ ],
+ "default_view": "List",
+ "quick_entry": 0,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "track_changes": 0,
+ "read_only": 1,
+ "in_create": 1
+}

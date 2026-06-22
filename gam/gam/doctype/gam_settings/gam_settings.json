@@ -1,0 +1,88 @@
+{
+ "doctype": "DocType",
+ "name": "GAM Settings",
+ "module": "GAM",
+ "engine": "InnoDB",
+ "fields": [
+  {
+   "fieldname": "max_online_hours",
+   "fieldtype": "Int",
+   "label": "Max Online Hours (warning)",
+   "default": "8",
+   "description": "Ngưỡng online liên tục (giờ). Vượt qua sẽ popup cảnh báo cho user đang dùng tài khoản.",
+   "non_negative": 1
+  },
+  {
+   "fieldname": "min_rested_hours",
+   "fieldtype": "Int",
+   "label": "Min Rested Hours (ready badge)",
+   "default": "8",
+   "description": "Ngưỡng nghỉ tối thiểu (giờ) để tài khoản được gắn tag 'đã nghỉ đủ' sẵn sàng dùng.",
+   "non_negative": 1
+  },
+  {
+   "fieldname": "hard_cap_online_hours",
+   "fieldtype": "Int",
+   "label": "Hard Cap Online Hours (auto release)",
+   "default": "12",
+   "description": "Hạn cứng (giờ). Lease sẽ tự force-release khi vượt qua (đặt lease_until = started_at + giá trị này).",
+   "non_negative": 1
+  },
+  {
+   "fieldname": "block_logout_with_active_lease",
+   "fieldtype": "Check",
+   "label": "Warn On Logout With Active Lease",
+   "default": "1",
+   "description": "Bật cảnh báo (không block cứng) khi user đăng xuất mà còn tài khoản đang checkin."
+  },
+  {
+   "fieldname": "grant_default_policy",
+   "fieldtype": "Select",
+   "label": "Access Grant Default Policy",
+   "options": "match_role\nnone",
+   "default": "match_role",
+   "description": "Hành vi khi một user KHÔNG có GAM Access Grant nào. 'match_role' (mặc định, giữ hành vi cũ = thấy các section theo Frappe role); 'none' = ẩn hoàn toàn các section role/game (chỉ admin thấy tất cả)."
+  }
+ ],
+ "permissions": [
+  {
+   "role": "GAM Admin",
+   "read": 1,
+   "write": 1,
+   "create": 0,
+   "delete": 0,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  },
+  {
+   "role": "GAM Member",
+   "read": 1,
+   "write": 0,
+   "create": 0,
+   "delete": 0,
+   "email": 0,
+   "print": 0,
+   "report": 0,
+   "share": 0
+  },
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 0,
+   "delete": 0,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  }
+ ],
+ "default_view": "Form",
+ "quick_entry": 0,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "track_changes": 1,
+ "issingle": 1
+}
