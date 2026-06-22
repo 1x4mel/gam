@@ -622,10 +622,11 @@ def get_account_stats():
 	# by_role: distinct accounts per role, from the binding table.
 	role_rows = frappe.db.sql(
 		"""
-		SELECT role, COUNT(DISTINCT account) AS count
-		FROM `tabGAM Account Role Game`
-		WHERE IFNULL(role, '') != ''
-		GROUP BY role
+		SELECT arg.role AS role, COUNT(DISTINCT arg.account) AS count
+		FROM `tabGAM Account Role Game` arg
+		INNER JOIN `tabGAM Account` a ON a.name = arg.account
+		WHERE IFNULL(arg.role, '') != ''
+		GROUP BY arg.role
 		""",
 		as_dict=True,
 	)
@@ -661,6 +662,7 @@ def get_role_game_sections():
 		       gg.game_name AS game_name,
 		       COUNT(DISTINCT arg.account) AS count
 		FROM `tabGAM Account Role Game` arg
+		INNER JOIN `tabGAM Account` a ON a.name = arg.account
 		LEFT JOIN `tabGAM Game` gg ON gg.name = arg.game
 		WHERE IFNULL(arg.role, '') != ''
 		GROUP BY arg.role, arg.game, gg.game_name
