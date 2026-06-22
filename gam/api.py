@@ -17,6 +17,11 @@ import re
 import socket
 from email.utils import parsedate_to_datetime
 
+try:
+	from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover - py<3.9
+	ZoneInfo = None
+
 import frappe
 from frappe import _
 from frappe.rate_limiter import rate_limit
@@ -24,6 +29,7 @@ from frappe.utils import (
 	add_to_date,
 	cint,
 	convert_utc_to_system_timezone,
+	get_system_timezone,
 	now_datetime,
 )
 
@@ -454,25 +460,54 @@ def save_gam_settings(
 	return _get_settings()
 
 
+def _naive_system_dt_to_utc_epoch(naive_dt):
+	"""True UTC epoch *seconds* for a naive datetime stored in the system tz.
+
+	Frappe persists ``Datetime`` fields as naive wall-clock values in the system
+	timezone (System Settings → time_zone). The DB connection, however, often
+	runs with ``time_zone = SYSTEM`` on a UTC host, so ``UNIX_TIMESTAMP(col)``
+	reads the stored value as if it were UTC — off by the system-tz offset. That
+	skew made the active-usage elapsed clock freeze on "0s" (the lease start
+	appeared to be ~7h in the future). Localising in Python makes the value
+	independent of the DB session timezone, so it matches ``server_epoch_now_ms``
+	(which is already a true UTC epoch).
+	"""
+	if not naive_dt:
+		return None
+	dt = naive_dt
+	if getattr(dt, "tzinfo", None) is not None:  # already aware → just convert
+		return dt.timestamp()
+	tzname = get_system_timezone()
+	try:
+		if ZoneInfo is not None:
+			dt = dt.replace(tzinfo=ZoneInfo(tzname))
+		else:  # pragma: no cover - py<3.9 fallback
+			import pytz
+			dt = pytz.timezone(tzname).localize(dt)
+		return dt.timestamp()
+	except Exception:
+		return None
+
+
 def _active_usage_select(extra_where="", params=()):
 	"""Shared SELECT for active (IN_USE) leases with account + user resolution.
 
 	Note: ``usage`` is a reserved word in MariaDB — the alias is ``usage_name``.
 
-	``started_at_epoch`` / ``lease_until_epoch`` are absolute epoch seconds from
-	the DB server clock (UNIX_TIMESTAMP). They make the client elapsed timer
-	timezone-independent and consistent with the server-side auto-release sweep,
-	so the frontend never has to parse a naive datetime string.
+	``started_at_epoch`` / ``lease_until_epoch`` are TRUE UTC epoch seconds,
+	computed in Python (see ``_naive_system_dt_to_utc_epoch``) by interpreting
+	the stored naive datetime in the system timezone. We intentionally do NOT
+	use SQL ``UNIX_TIMESTAMP(col)`` here: that interprets the naive value in the
+	DB *session* timezone, which is UTC on this host while Frappe stored the
+	value in Asia/Ho_Chi_Minh — a ~7h skew that froze the client timer on "0s".
 	"""
-	return frappe.db.sql(
+	rows = frappe.db.sql(
 		"""
 		SELECT u.name AS usage_name, u.account, a.username, a.platform,
 		       (SELECT arg.role FROM `tabGAM Account Role Game` arg
 		         WHERE arg.account = a.name AND arg.is_main = 1
 		         ORDER BY arg.idx LIMIT 1) AS role,
 		       u.used_by, u.purpose, u.started_at, u.lease_until,
-		       UNIX_TIMESTAMP(u.started_at) AS started_at_epoch,
-		       UNIX_TIMESTAMP(u.lease_until) AS lease_until_epoch,
 		       uu.full_name AS used_by_full_name,
 		       (SELECT gg.game_name
 		          FROM `tabGAM Account Role Game` arg
@@ -488,6 +523,31 @@ def _active_usage_select(extra_where="", params=()):
 		tuple(params),
 		as_dict=True,
 	)
+	# Attach timezone-correct epochs (true UTC seconds) per row.
+	for r in rows:
+		r["started_at_epoch"] = _naive_system_dt_to_utc_epoch(r.get("started_at"))
+		r["lease_until_epoch"] = _naive_system_dt_to_utc_epoch(r.get("lease_until"))
+	return rows
+
+
+def _server_epoch_now_ms():
+	"""Current DB-server clock as epoch *milliseconds*.
+
+	The frontend elapsed timer is driven by the DB clock (via
+	``started_at_epoch``) so it stays consistent with the server-side
+	auto-release sweep. Returning the matching "now" lets the client compute a
+	clock offset and never show a bogus "0s" when the DB clock runs ahead of the
+	browser clock. ``NOW(6)`` gives sub-second precision (MariaDB/MySQL 5.6+).
+	"""
+	val = frappe.db.sql("SELECT UNIX_TIMESTAMP(NOW(6))")[0][0]
+	return int(round(float(val) * 1000))
+
+
+def _wrap_active(rows):
+	"""Wrap active-usage rows with the server clock so the client timer is
+	timezone- and clock-skew-independent. Shape: {server_epoch_now_ms, leases}.
+	"""
+	return {"server_epoch_now_ms": _server_epoch_now_ms(), "leases": rows or []}
 
 
 @frappe.whitelist()
@@ -498,7 +558,7 @@ def get_active_usage():
 	system-wide badge.
 	"""
 	_require_gam_user()
-	return _active_usage_select()
+	return _wrap_active(_active_usage_select())
 
 
 @frappe.whitelist()
@@ -507,7 +567,7 @@ def get_my_active_usage():
 	sidebar badge for the current user, and the logout guard.
 	"""
 	_require_gam_user()
-	return _active_usage_select("AND u.used_by = %s", (frappe.session.user,))
+	return _wrap_active(_active_usage_select("AND u.used_by = %s", (frappe.session.user,)))
 
 
 @frappe.whitelist()
