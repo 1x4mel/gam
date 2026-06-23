@@ -20,12 +20,6 @@
    "in_list_view": 1
   },
   {
-   "fieldname": "region",
-   "fieldtype": "Select",
-   "label": "Region (legacy)",
-   "options": "AMERICAS\nASIA\nEUROPE\nGLOBAL"
-  },
-  {
    "fieldname": "is_active",
    "fieldtype": "Check",
    "label": "Is Active",

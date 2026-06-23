@@ -65,6 +65,66 @@
    "fieldname": "purchased_at",
    "fieldtype": "Datetime",
    "label": "Purchased At"
+  },
+  {
+   "fieldname": "account_level",
+   "fieldtype": "Select",
+   "label": "Account Level",
+   "options": "PLATFORM\nGAME",
+   "reqd": 1,
+   "default": "GAME",
+   "in_list_view": 1,
+   "description": "GỐC→Thân (PLATFORM) or GỐC→Cành (GAME)."
+  },
+  {
+   "fieldname": "parent_account",
+   "fieldtype": "Link",
+   "label": "Parent Account",
+   "options": "GAM Account",
+   "description": "Set only when level=GAME and created on a platform."
+  },
+  {
+   "fieldname": "standalone",
+   "fieldtype": "Check",
+   "label": "Standalone",
+   "default": "0",
+   "description": "1 when a GAME node is created directly on an email (no platform)."
+  },
+  {
+   "fieldname": "billing_type",
+   "fieldtype": "Select",
+   "label": "Billing Type",
+   "options": "ONE_TIME\nRENTAL\nSUBSCRIPTION",
+   "default": "ONE_TIME"
+  },
+  {
+   "fieldname": "active_until",
+   "fieldtype": "Datetime",
+   "label": "Active Until",
+   "description": "Expiry; required when billing_type != ONE_TIME."
+  },
+  {
+   "fieldname": "renewal_lead_days",
+   "fieldtype": "Int",
+   "label": "Renewal Lead Days",
+   "default": "3",
+   "description": "Days before expiry to flag."
+  },
+  {
+   "fieldname": "auto_renew",
+   "fieldtype": "Check",
+   "label": "Auto Renew",
+   "default": "0"
+  },
+  {
+   "fieldname": "renewal_cost",
+   "fieldtype": "Currency",
+   "label": "Renewal Cost"
+  },
+  {
+   "fieldname": "last_renewed_at",
+   "fieldtype": "Datetime",
+   "label": "Last Renewed At"
   }
  ],
  "permissions": [

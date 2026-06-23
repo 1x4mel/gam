@@ -281,6 +281,9 @@ scheduler_events = {
 	"all": [
 		"gam.tasks.force_release_leases",
 	],
+	"daily": [
+		"gam.tasks.flag_expiring_accounts",
+	],
 	"cron": {
 		"*/5 * * * *": ["gam.tasks.expire_email_codes"],
 	},

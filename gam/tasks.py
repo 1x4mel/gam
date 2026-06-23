@@ -4,6 +4,8 @@
 import frappe
 from frappe.utils import now_datetime
 
+from gam.realtime import emit_renewals_changed
+
 
 def expire_email_codes():
 	"""Mark AVAILABLE codes past their expires_at as EXPIRED (Design §7.4)."""
@@ -31,3 +33,29 @@ def force_release_leases():
 		usage.ended_at = now
 		usage.end_reason = "TIMEOUT"
 		usage.save(ignore_permissions=True)
+
+
+def flag_expiring_accounts():
+	"""Surface PLATFORM/standalone-GAME accounts within their renewal window.
+
+	Plan §2.4: any account whose billing_type != ONE_TIME, status is ACTIVE,
+	and active_until falls within ``renewal_lead_days`` of now is "due". The job
+	only needs to nudge the dashboard — the renewal_state is computed on read —
+	so here we just broadcast ``gam_renewals_changed`` once when due rows exist.
+	"""
+	now = now_datetime()
+	due = frappe.db.sql(
+		"""
+		SELECT name
+		FROM `tabGAM Account`
+		WHERE account_level IN ('PLATFORM', 'GAME')
+		  AND billing_type != 'ONE_TIME'
+		  AND status = 'ACTIVE'
+		  AND active_until IS NOT NULL
+		  AND active_until <= DATE_ADD(%s, INTERVAL IFNULL(renewal_lead_days, 3) DAY)
+		""",
+		(now,),
+		as_dict=True,
+	)
+	if due:
+		emit_renewals_changed()

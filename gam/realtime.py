@@ -60,3 +60,21 @@ def emit_role_sections_changed():
 		)
 	except Exception:
 		frappe.log_error("gam: emit_role_sections_changed failed")
+
+
+def emit_renewals_changed(account=None):
+	"""Broadcast that the renewals/expiry board changed.
+
+	Fired by: ``renew_account`` (manual renewal), the daily
+	``flag_expiring_accounts`` scheduler, and ``save_account`` when billing
+	fields change. The gam-ui renewals views listen on
+	``gam_renewals_changed`` and refresh the due/overdue counts.
+	"""
+	try:
+		frappe.publish_realtime(
+			"gam_renewals_changed",
+			{"account": account, "user": frappe.session.user},
+			broadcast=True,
+		)
+	except Exception:
+		frappe.log_error("gam: emit_renewals_changed failed")

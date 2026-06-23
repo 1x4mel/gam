@@ -1,0 +1,128 @@
+{
+ "doctype": "DocType",
+ "name": "GAM Renewal Log",
+ "module": "GAM",
+ "engine": "InnoDB",
+ "fields": [
+  {
+   "fieldname": "account",
+   "fieldtype": "Link",
+   "label": "Account",
+   "reqd": 1,
+   "options": "GAM Account",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "account_level",
+   "fieldtype": "Select",
+   "label": "Account Level",
+   "options": "PLATFORM\nGAME",
+   "read_only": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "billing_type",
+   "fieldtype": "Select",
+   "label": "Billing Type",
+   "options": "ONE_TIME\nRENTAL\nSUBSCRIPTION",
+   "read_only": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "previous_active_until",
+   "fieldtype": "Datetime",
+   "label": "Previous Active Until",
+   "read_only": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "new_active_until",
+   "fieldtype": "Datetime",
+   "label": "New Active Until",
+   "reqd": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "renewal_days",
+   "fieldtype": "Int",
+   "label": "Renewal Days",
+   "description": "Number of days the active period was extended by."
+  },
+  {
+   "fieldname": "renewal_cost",
+   "fieldtype": "Currency",
+   "label": "Renewal Cost",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "auto_renew",
+   "fieldtype": "Check",
+   "label": "Auto Renew",
+   "read_only": 1,
+   "description": "1 if this renewal was performed by the scheduler; 0 if manual."
+  },
+  {
+   "fieldname": "renewed_by",
+   "fieldtype": "Link",
+   "label": "Renewed By",
+   "options": "User",
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "renewed_at",
+   "fieldtype": "Datetime",
+   "label": "Renewed At",
+   "reqd": 1,
+   "in_list_view": 1
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes"
+  }
+ ],
+ "permissions": [
+  {
+   "role": "GAM Admin",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  },
+  {
+   "role": "GAM Member",
+   "read": 1,
+   "write": 0,
+   "create": 0,
+   "delete": 0,
+   "email": 0,
+   "print": 0,
+   "report": 0,
+   "share": 0,
+   "if_owner": 0,
+   "permlevel": 0
+  },
+  {
+   "role": "System Manager",
+   "read": 1,
+   "write": 1,
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "report": 1,
+   "share": 1
+  }
+ ],
+ "default_view": "List",
+ "quick_entry": 0,
+ "sort_field": "renewed_at",
+ "sort_order": "DESC",
+ "track_changes": 1,
+ "title_field": "account",
+ "search_fields": "account,billing_type,renewed_by"
+}

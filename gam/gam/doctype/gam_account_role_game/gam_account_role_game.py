@@ -20,6 +20,7 @@ class GAMAccountRoleGame(Document):
 
 	def validate(self):
 		self._validate_unique_account_game()
+		self._validate_platform_game_unique()
 
 	def _validate_unique_account_game(self):
 		"""One role per (account, game). Reject duplicates (different name)."""
@@ -35,4 +36,42 @@ class GAMAccountRoleGame(Document):
 					"Account {0} already has a role for game {1} (row {2}). "
 					"Use one role per (account, game)."
 				).format(self.account, self.game, dup)
+			)
+
+	def _validate_platform_game_unique(self):
+		"""One game binding per platform (sibling uniqueness, plan §2.1).
+
+		A GAME node bound to a PLATFORM parent shares that parent with its
+		siblings. Two sibling nodes under the same platform must NOT bind the
+		same game, otherwise on-platform binding resolution up the tree would be
+		ambiguous. Reject before any write happens.
+		"""
+		if not (self.account and self.game):
+			return
+		parent_account = frappe.db.get_value(
+			"GAM Account", self.account, "parent_account"
+		)
+		if not parent_account:
+			return
+		sibling = frappe.db.sql(
+			"""
+			SELECT rg.account
+			FROM `tabGAM Account Role Game` rg
+			JOIN `tabGAM Account` a ON a.name = rg.account
+			WHERE a.parent_account = %s
+			  AND rg.account != %s
+			  AND rg.game = %s
+			""",
+			(parent_account, self.account, self.game),
+		)
+		if sibling:
+			label = (
+				frappe.db.get_value("GAM Game", self.game, "game_name")
+				or self.game
+			)
+			frappe.throw(
+				frappe._(
+					"Game {0} is already bound to another account ({1}) under "
+					"this platform. One game binding per platform is allowed."
+				).format(label, sibling[0][0])
 			)

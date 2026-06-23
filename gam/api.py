@@ -33,7 +33,12 @@ from frappe.utils import (
 	now_datetime,
 )
 
-from gam.realtime import emit_new_code, emit_account_changed, emit_role_sections_changed
+from gam.realtime import (
+	emit_new_code,
+	emit_account_changed,
+	emit_role_sections_changed,
+	emit_renewals_changed,
+)
 
 # Password fields that may be revealed. Design §4.4/§6.2.
 REVEALABLE_FIELDS = {"account_password", "email_password", "totp_secret"}
@@ -104,9 +109,19 @@ def reveal_password(doctype, name, fieldname, action="REVEAL"):
 
 	# frappe.get_doc enforces read permission by role
 	doc = frappe.get_doc(doctype, name)
-	password = doc.get_password(fieldname) or ""
+	# get_password() raises "Password not found" when the doc carries no value
+	# (e.g. a GAME node that inherits its credentials from a PLATFORM parent).
+	# Treat that as an empty reveal rather than a hard error so the UI can show
+	# a graceful "inherited / not set" state instead of an error toast.
+	try:
+		password = doc.get_password(fieldname) or ""
+	except Exception:
+		password = ""
 
-	_log_reveal(doctype, name, fieldname, action)
+	# Only persist an audit row (and risk its fail-closed throw) when there was
+	# actually a secret to disclose — logging a no-op reveal would be noise.
+	if password:
+		_log_reveal(doctype, name, fieldname, action)
 	return {"password": password}
 
 
@@ -550,6 +565,51 @@ def _wrap_active(rows):
 	return {"server_epoch_now_ms": _server_epoch_now_ms(), "leases": rows or []}
 
 
+def _resting_usage_select():
+	"""Accounts đang "nghỉ" (cooling) sau khi checkout, chưa đủ min_rested_hours.
+
+	Đối xứng với ``_active_usage_select`` nhưng cho trạng thái OFFLINE: lấy bản
+	release (RELEASED/FORCE_RELEASED) gần nhất của mỗi account (MAX(ended_at)),
+	loại trừ account đang có lease IN_USE, và chỉ trong cửa sổ ``min_rested_hours``
+	gần đây. ``ended_at_epoch`` là true-UTC epoch seconds (cùng cơ chế
+	``_naive_system_dt_to_utc_epoch``) để FE đếm countdown không lệch clock-skew.
+	"""
+	settings = _get_settings()
+	min_rested_h = cint(settings.get("min_rested_hours")) or 8
+	cutoff = add_to_date(now_datetime(), hours=-min_rested_h)
+	rows = frappe.db.sql(
+		"""
+		SELECT u.name AS usage_name, u.account, a.username, a.platform,
+		       u.used_by, u.purpose, u.ended_at, u.end_reason,
+		       uu.full_name AS used_by_full_name,
+		       (SELECT gg.game_name
+		          FROM `tabGAM Account Role Game` arg
+		          LEFT JOIN `tabGAM Game` gg ON gg.name = arg.game
+		         WHERE arg.account = a.name AND arg.is_main = 1
+		         ORDER BY arg.idx LIMIT 1) AS main_game
+		FROM `tabGAM Account Usage` u
+		INNER JOIN `tabGAM Account` a ON a.name = u.account
+		LEFT JOIN `tabUser` uu ON uu.name = u.used_by
+		WHERE u.status IN ('RELEASED', 'FORCE_RELEASED')
+		  AND u.ended_at IS NOT NULL
+		  AND u.ended_at >= %(cutoff)s
+		  AND NOT EXISTS (
+		         SELECT 1 FROM `tabGAM Account Usage` u2
+		          WHERE u2.account = u.account AND u2.status = 'IN_USE')
+		  AND u.ended_at = (
+		         SELECT MAX(ended_at) FROM `tabGAM Account Usage`
+		          WHERE account = u.account
+		            AND status IN ('RELEASED', 'FORCE_RELEASED'))
+		ORDER BY u.ended_at DESC
+		""",
+		{"cutoff": cutoff},
+		as_dict=True,
+	)
+	for r in rows:
+		r["ended_at_epoch"] = _naive_system_dt_to_utc_epoch(r.get("ended_at"))
+	return rows
+
+
 @frappe.whitelist()
 def get_active_usage():
 	"""All currently-checked-in leases (IN_USE). Aggregate, safe for any GAM user.
@@ -559,6 +619,23 @@ def get_active_usage():
 	"""
 	_require_gam_user()
 	return _wrap_active(_active_usage_select())
+
+
+@frappe.whitelist()
+def get_resting_usage():
+	"""Accounts đang "nghỉ" (cooling) sau checkout, chưa đủ min_rested_hours.
+
+	Đối xứng ``get_active_usage`` nhưng cho trạng thái OFFLINE. Drives: section
+	"Đang nghỉ" với bộ đếm countdown realtime đến khi "Sẵn sàng & an toàn".
+	Bao gồm ``min_rested_hours`` để FE tính ``rest_until = ended_at + min*3600``
+	mà không phụ thuộc cache settings.
+	"""
+	_require_gam_user()
+	return {
+		"server_epoch_now_ms": _server_epoch_now_ms(),
+		"min_rested_hours": cint(_get_settings().get("min_rested_hours")) or 8,
+		"resting": _resting_usage_select(),
+	}
 
 
 @frappe.whitelist()
@@ -1179,7 +1256,7 @@ def get_account_names_for_game(game):
 @frappe.whitelist()
 def get_accounts_list(filters=None, limit_start=0, limit_page_length=20):
 	"""List GAM Accounts (read for any GAM user) with each account's games
-	expanded inline (game_name + server region + is_main).
+	expanded inline (game_name + server name + is_main).
 
 	Replaces the REST ``frappe.client.get_list`` for the Accounts view: get_list
 	does NOT return child-table rows, so the account cards could never show the
@@ -1210,6 +1287,30 @@ def get_accounts_list(filters=None, limit_start=0, limit_page_length=20):
 
 	cond = ["1=1"]
 	vals = []
+	# ---- Hierarchy / billing filters (plan §2.2) ------------------------
+	# Default to GAME nodes so the member-facing account list keeps showing
+	# the operational entities; callers (admin views) pass account_level
+	# explicitly. Use the literal "ALL" to opt out of the level filter.
+	_account_level = (filters.get("account_level") or "").strip().upper()
+	if _account_level and _account_level != "ALL":
+		cond.append("a.account_level = %s")
+		vals.append(_account_level)
+	else:
+		cond.append("a.account_level = %s")
+		vals.append("GAME")
+	if filters.get("parent_account"):
+		cond.append("a.parent_account = %s")
+		vals.append(filters["parent_account"])
+	if filters.get("billing_type"):
+		cond.append("a.billing_type = %s")
+		vals.append(filters["billing_type"])
+	if filters.get("renewal_due"):
+		# billing_type != ONE_TIME and active_until within renewal lead window.
+		cond.append(
+			"a.billing_type != 'ONE_TIME' "
+			"AND a.active_until IS NOT NULL "
+			"AND a.active_until <= DATE_ADD(NOW(), INTERVAL IFNULL(a.renewal_lead_days,3) DAY)"
+		)
 	if filters.get("platform"):
 		cond.append("a.platform = %s")
 		vals.append(filters["platform"])
@@ -1250,7 +1351,9 @@ def get_accounts_list(filters=None, limit_start=0, limit_page_length=20):
 	accounts = frappe.db.sql(
 		"""
 		SELECT a.name AS name, a.platform, a.username, a.email, a.source,
-		       a.status
+		       a.status, a.account_level, a.parent_account, a.standalone,
+		       a.billing_type, a.active_until, a.renewal_lead_days,
+		       a.auto_renew
 		FROM `tabGAM Account` a
 		WHERE {where}
 		ORDER BY a.modified DESC
@@ -1270,7 +1373,7 @@ def get_accounts_list(filters=None, limit_start=0, limit_page_length=20):
 			"""
 			SELECT arg.account AS account, arg.role AS role,
 			       arg.game AS game, gg.game_name AS game_name,
-			       arg.server AS server, gs.region AS server_region,
+			       arg.server AS server, gs.server_name AS server_name,
 			       arg.is_main AS is_main
 			FROM `tabGAM Account Role Game` arg
 			LEFT JOIN `tabGAM Game` gg ON gg.name = arg.game
@@ -1288,7 +1391,7 @@ def get_accounts_list(filters=None, limit_start=0, limit_page_length=20):
 				"game": gr["game"],
 				"game_name": gr["game_name"] or gr["game"],
 				"server": gr["server"],
-				"server_region": gr["server_region"],
+				"server_name": gr["server_name"],
 				"is_main": cint(gr["is_main"]),
 			})
 		for a in accounts:
@@ -1347,7 +1450,7 @@ def get_accounts_list(filters=None, limit_start=0, limit_page_length=20):
 
 @frappe.whitelist()
 def get_account_role_games(account):
-	"""Return one account's (role, game) bindings with game name, server region
+	"""Return one account's (role, game) bindings with game name, server name
 	and DLCs expanded.
 
 	The detail view used to read the legacy ``GAM Account Game`` child table via
@@ -1364,7 +1467,7 @@ def get_account_role_games(account):
 		SELECT arg.name AS name, arg.role AS role, arg.game AS game,
 		       arg.server AS server, arg.is_main AS is_main,
 		       arg.purchased_at AS purchased_at, arg.notes AS notes,
-		       gg.game_name AS game_name, gs.region AS server_region
+		       gg.game_name AS game_name, gs.server_name AS server_name
 		FROM `tabGAM Account Role Game` arg
 		LEFT JOIN `tabGAM Game` gg ON gg.name = arg.game
 		LEFT JOIN `tabGAM Game Server` gs ON gs.name = arg.server
@@ -2535,6 +2638,41 @@ def _apply_account_role_games(account_name, rows_value):
 	}
 	incoming_games = {r["game"] for r in clean}
 
+	# Platform-level game uniqueness (plan §2.1): a GAME node bound to a
+	# PLATFORM parent shares that parent with its siblings. Two sibling nodes
+	# under the same platform must NOT bind the same game (one game per
+	# platform). On-platform binding resolves up the tree, so a duplicate would
+	# be ambiguous. Reject before any write happens.
+	parent_account = frappe.db.get_value(
+		"GAM Account", account_name, "parent_account"
+	)
+	if parent_account and incoming_games:
+		clashes = frappe.db.sql(
+			"""
+			SELECT rg.game, rg.account
+			FROM `tabGAM Account Role Game` rg
+			JOIN `tabGAM Account` a ON a.name = rg.account
+			WHERE a.parent_account = %s
+			  AND rg.account != %s
+			  AND rg.game IN %s
+			""",
+			(parent_account, account_name, tuple(incoming_games)),
+			as_dict=True,
+		)
+		if clashes:
+			game_names = {
+				c["game"]: c["account"] for c in clashes
+			}
+			label = frappe.db.get_value(
+				"GAM Game", list(game_names.keys())[0], "game_name"
+			) or list(game_names.keys())[0]
+			frappe.throw(
+				_(
+					"Game {0} is already bound to another account under this "
+					"platform. One game binding per platform is allowed."
+				).format(label)
+			)
+
 	# Enforce single is_main per account: first flagged row wins.
 	main_picked = False
 	for r in clean:
@@ -2612,13 +2750,62 @@ def save_account(values, name=None):
 	platform = (values.get("platform") or "").strip()
 	username = (values.get("username") or "").strip()
 	email = (values.get("email") or "").strip()
-	if not (platform and username and email):
-		frappe.throw(_("Platform, username and email are required."))
+	account_level = (values.get("account_level") or "GAME").strip().upper()
+	parent_account = (values.get("parent_account") or "").strip()
+
+	# ---- Hierarchy-aware validation (plan §2.1) -------------------------
+	# A GAME node on a platform may resolve credentials from its parent, so
+	# username/password/totp/email are only strictly required for PLATFORM
+	# nodes and standalone GAME nodes.
+	if account_level == "PLATFORM":
+		if not (platform and username and email):
+			frappe.throw(_("Platform, username and email are required."))
+	elif account_level == "GAME":
+		if parent_account:
+			# On-platform game node: email auto-inherits from parent; username
+			# is optional (resolved up the tree by resolve_account_credentials).
+			if not email:
+				parent_email = frappe.db.get_value(
+					"GAM Account", parent_account, "email"
+				)
+				if not parent_email:
+					frappe.throw(_("Parent account has no email to inherit."))
+				email = parent_email
+			# Username is optional for child nodes, but the doctype marks it
+			# mandatory (reqd=1) and Frappe enforces that BEFORE validate().
+			# Inherit the parent's username at save time so the mandatory
+			# check passes; resolve_account_credentials() still prefers an
+			# explicit value when present.
+			if not username:
+				username = frappe.db.get_value(
+					"GAM Account", parent_account, "username"
+				) or ""
+				if not username:
+					frappe.throw(_("Parent account has no username to inherit."))
+		else:
+			# Standalone game node: it owns its own identity. Platform defaults to
+			# "STANDALONE" since standalone accounts do not belong to any platform.
+			if not (username and email):
+				frappe.throw(_("Username and email are required."))
+			if not platform:
+				platform = "STANDALONE"
+	else:
+		frappe.throw(_("account_level must be PLATFORM or GAME."))
 
 	if name:
 		doc = frappe.get_doc("GAM Account", name)
+		# Capture the previous parent so we can notify the old platform when a
+		# node is re-parented (its child tree must drop the node live).
+		old_parent = (frappe.db.get_value("GAM Account", name, "parent_account") or "").strip()
 	else:
 		doc = frappe.new_doc("GAM Account")
+		old_parent = ""
+
+	doc.account_level = account_level
+	doc.parent_account = parent_account if account_level == "GAME" else ""
+	# standalone is derived in validate(), but mirror it here so the caller
+	# sees the correct state in the returned doc without a second read.
+	doc.standalone = 1 if account_level == "GAME" and not parent_account else 0
 
 	doc.platform = platform
 	doc.username = username
@@ -2633,6 +2820,19 @@ def save_account(values, name=None):
 	totp = values.get("totp_secret")
 	if totp:
 		doc.totp_secret = totp
+
+	# ---- Billing / renewal fields (plan §2.1) ---------------------------
+	doc.billing_type = values.get("billing_type") or "ONE_TIME"
+	doc.active_until = values.get("active_until") or ""
+	doc.auto_renew = 1 if values.get("auto_renew") else 0
+	if values.get("renewal_lead_days") is not None:
+		try:
+			doc.renewal_lead_days = int(values.get("renewal_lead_days"))
+		except (TypeError, ValueError):
+			doc.renewal_lead_days = 3
+	if values.get("renewal_cost") is not None:
+		doc.renewal_cost = values.get("renewal_cost")
+	# last_renewed_at is managed by the renewal action, not by save_account.
 
 	if name:
 		doc.save(ignore_permissions=True)
@@ -2652,6 +2852,18 @@ def save_account(values, name=None):
 
 	# Always broadcast the account change so detail/lock state refreshes.
 	emit_account_changed(doc.name, "save")
+	# Hierarchy bidirectional sync: when a GAME node is attached to / detached
+	# from / re-parented onto a PLATFORM, that platform's open detail page must
+	# rebuild its child tree live. save_account stores the link once (on the
+	# child's parent_account); the parent only reads children via a query, so a
+	# realtime nudge is all that's missing. Emit for the new parent (if any) and,
+	# when the parent changed, the previous one too — an open platform-detail
+	# listens on `gam_account_changed` keyed by its own name.
+	new_parent = (doc.parent_account or "").strip()
+	if new_parent and new_parent != doc.name:
+		emit_account_changed(new_parent, "save")
+	if old_parent and old_parent != new_parent and old_parent != doc.name:
+		emit_account_changed(old_parent, "save")
 	# Only reflow the dynamic section catalog when bindings actually changed
 	# (a password/status edit must NOT trigger a sidebar reflow).
 	if bindings_changed:
@@ -2791,13 +3003,398 @@ def delete_account(name):
 		update_modified=False,
 	)
 
+	# If the deleted node was a GAME child, nudge its PLATFORM parent so an open
+	# platform-detail rebuilds its child tree (the node is about to vanish).
+	parent_of_deleted = (frappe.db.get_value("GAM Account", name, "parent_account") or "").strip()
 	# Broadcast BEFORE the delete so listeners (detail/lock state, other tabs)
 	# refresh live; the realtime payload only carries the name.
 	emit_account_changed(name, "delete")
+	if parent_of_deleted and parent_of_deleted != name:
+		emit_account_changed(parent_of_deleted, "delete")
 	# Bindings were just cleared -> reflow the dynamic section catalog too.
 	emit_role_sections_changed()
 	frappe.delete_doc("GAM Account", name, ignore_permissions=True)
 	return {"deleted": True}
+
+
+# ============================================================================
+# 6a. Account hierarchy (Gốc→Thân→Cành) + billing/renewal helpers
+# ============================================================================
+@frappe.whitelist()
+def resolve_account_credentials(game_account_name):
+	"""Resolve effective credentials for a GAME node (plan §2.3).
+
+	Returns ``{"username","account_password","totp_secret","email"}``. When the
+	GAME node has its own password/TOTP they win; otherwise credentials are
+	inherited from its ``parent_account`` (the PLATFORM node). Returns ``None``
+	when neither the node nor its parent carries anything usable.
+
+	The result also carries two boolean flags — ``own_has_password`` and
+	``own_has_totp`` — describing whether the GAME node itself (not the
+	inherited parent) owns a value. The detail UI uses these to decide whether
+	to render a reveal affordance on the node's own credential block versus a
+	"not set / inherited" hint.
+
+	Access: any session user granted this account (admins bypass), mirroring the
+	reveal_password gate so this never leaks secrets to ungranted users.
+	"""
+	_require_account_access(game_account_name)
+
+	def _creds(doc_name):
+		if not doc_name or not frappe.db.exists("GAM Account", doc_name):
+			return None
+		doc = frappe.get_doc("GAM Account", doc_name)
+		password = ""
+		try:
+			password = doc.get_password("account_password") or ""
+		except Exception:
+			password = ""
+		totp = ""
+		try:
+			totp = doc.get_password("totp_secret") or ""
+		except Exception:
+			totp = ""
+		return {
+			"username": doc.username or "",
+			"account_password": password,
+			"totp_secret": totp,
+			"email": doc.email or "",
+		}
+
+	own = _creds(game_account_name)
+	own_has_password = bool(own and own["account_password"])
+	own_has_totp = bool(own and own["totp_secret"])
+
+	def _stamp(result):
+		"""Attach the own-flags so the caller can render its own-vs-inherited UI."""
+		if result is None:
+			result = {"username": "", "account_password": "", "totp_secret": "", "email": ""}
+		result["own_has_password"] = own_has_password
+		result["own_has_totp"] = own_has_totp
+		return result
+
+	if own and (own["account_password"] or own["totp_secret"]):
+		return _stamp(own)
+
+	parent = frappe.db.get_value("GAM Account", game_account_name, "parent_account")
+	if parent:
+		inherited = _creds(parent)
+		if inherited:
+			# Prefer the node's own username/email, fall back to the parent's.
+			inherited["username"] = (own and own["username"]) or inherited["username"]
+			inherited["email"] = (own and own["email"]) or inherited["email"]
+			return _stamp(inherited)
+	return _stamp(own)
+
+
+@frappe.whitelist()
+def get_platform_accounts():
+	"""Admin-only list of PLATFORM-level (Thân) accounts (plan §2.3).
+
+	Each row carries a computed ``children_count`` (GAME nodes bound to it) and a
+	``renewal_state`` (``OK`` / ``DUE`` / ``OVERDUE`` / ``ONE_TIME``).
+	"""
+	_require_gam_admin()
+	rows = frappe.db.sql(
+		"""
+		SELECT a.name, a.platform, a.username, a.email, a.source, a.status,
+		       a.billing_type, a.active_until, a.renewal_lead_days,
+		       a.auto_renew, a.renewal_cost, a.last_renewed_at,
+		       e.address AS email_address
+		FROM `tabGAM Account` a
+		LEFT JOIN `tabGAM Email` e ON e.name = a.email
+		WHERE a.account_level = 'PLATFORM'
+		ORDER BY a.platform, a.username
+		""",
+		as_dict=True,
+	)
+	# children_count + renewal_state are cheaper to compute in Python.
+	children = frappe.db.sql(
+		"""
+		SELECT parent_account, COUNT(*) AS n
+		FROM `tabGAM Account`
+		WHERE account_level = 'GAME' AND parent_account IS NOT NULL
+		GROUP BY parent_account
+		""",
+		as_dict=True,
+	)
+	counts = {r.parent_account: r.n for r in children}
+	now = frappe.utils.now_datetime()
+	for r in rows:
+		r["children_count"] = counts.get(r.name, 0)
+		r["renewal_state"] = _renewal_state(r.billing_type, r.active_until, r.renewal_lead_days, now)
+	return rows
+
+
+@frappe.whitelist()
+def get_platform_children(parent):
+	"""List the GAME child nodes of a PLATFORM account (Thân→Cành tree), each
+	enriched with its bound ``(role, game)`` bindings + server name + main flag.
+
+	Drives the platform-detail "Tài khoản Game con" section so a platform shows
+	the actual games living on its child nodes (the platform itself carries no
+	games — they live on the GAME branches). Read-only; any GAM user (gated by
+	the GAM Account doctype read permission, same surface as the link tree).
+	"""
+	_require_gam_user()
+	parent = (parent or "").strip()
+	if not parent or not frappe.db.exists("GAM Account", parent):
+		return []
+	# Only GAME nodes bound to this platform count as children.
+	rows = frappe.db.sql(
+		"""
+		SELECT a.name, a.username, a.platform, a.status, a.source,
+		       a.account_created_at
+		FROM `tabGAM Account` a
+		WHERE a.account_level = 'GAME'
+		  AND a.parent_account = %s
+		  AND a.docstatus < 2
+		ORDER BY a.creation DESC
+		""",
+		(parent,),
+		as_dict=True,
+	)
+	if not rows:
+		return []
+	names = [r["name"] for r in rows]
+	# Bindings (role, game, server, is_main) for every child in one query.
+	binds = frappe.db.sql(
+		"""
+		SELECT arg.account AS account, arg.role AS role, arg.game AS game,
+		       arg.server AS server, arg.is_main AS is_main,
+		       gg.game_name AS game_name, gs.server_name AS server_name
+		FROM `tabGAM Account Role Game` arg
+		LEFT JOIN `tabGAM Game` gg ON gg.name = arg.game
+		LEFT JOIN `tabGAM Game Server` gs ON gs.name = arg.server
+		WHERE arg.account IN %s
+		ORDER BY arg.is_main DESC, arg.idx ASC
+		""",
+		(tuple(names),),
+		as_dict=True,
+	)
+	by_account = {}
+	for b in binds:
+		b["is_main"] = cint(b.get("is_main"))
+		b["game_name"] = b.get("game_name") or b.get("game") or ""
+		by_account.setdefault(b["account"], []).append(b)
+	for r in rows:
+		r["role_games"] = by_account.get(r["name"], [])
+	return rows
+
+
+@frappe.whitelist()
+def get_game_accounts(filters=None):
+	"""Admin-only list of GAME-level (Cành) accounts (plan §2.3).
+
+	Joins the parent PLATFORM account for ``parent_username`` + ``email_address``
+	when the node is bound, and surfaces ``standalone`` + billing fields.
+	"""
+	_require_gam_admin()
+	if isinstance(filters, str):
+		filters = json.loads(filters) if filters else {}
+	filters = filters or {}
+
+	cond = ["a.account_level = 'GAME'"]
+	vals = []
+	if filters.get("parent_account"):
+		cond.append("a.parent_account = %s")
+		vals.append(filters["parent_account"])
+	if filters.get("standalone"):
+		cond.append("a.standalone = 1")
+	if filters.get("platform"):
+		cond.append("a.platform = %s")
+		vals.append(filters["platform"])
+	if filters.get("billing_type"):
+		cond.append("a.billing_type = %s")
+		vals.append(filters["billing_type"])
+	if filters.get("renewal_due"):
+		cond.append(
+			"a.billing_type != 'ONE_TIME' AND a.active_until IS NOT NULL "
+			"AND a.active_until <= DATE_ADD(NOW(), INTERVAL IFNULL(a.renewal_lead_days,3) DAY)"
+		)
+
+	rows = frappe.db.sql(
+		"""
+		SELECT a.name, a.platform, a.username, a.email, a.source, a.status,
+		       a.standalone, a.parent_account, a.billing_type, a.active_until,
+		       a.renewal_lead_days, a.auto_renew, a.renewal_cost, a.last_renewed_at,
+		       p.username AS parent_username,
+		       e1.address AS own_email_address,
+		       pe.address AS parent_email_address
+		FROM `tabGAM Account` a
+		LEFT JOIN `tabGAM Account` p ON p.name = a.parent_account
+		LEFT JOIN `tabGAM Email` e1 ON e1.name = a.email
+		LEFT JOIN `tabGAM Email` pe ON pe.name = p.email
+		WHERE {where}
+		ORDER BY a.platform, a.username
+		""".format(where=" AND ".join(cond)),
+		tuple(vals),
+		as_dict=True,
+	)
+	now = frappe.utils.now_datetime()
+	# Attach bound game + role values per GAME node so the admin card can show
+	# role/game badges and the client can filter by role/game without an extra
+	# round-trip per row.
+	bound = {}
+	if rows:
+		names = [r["name"] for r in rows]
+		for b in frappe.db.sql(
+			"""
+			SELECT account, game, role
+			FROM `tabGAM Account Role Game`
+			WHERE account IN %s
+			""",
+			(tuple(names),),
+			as_dict=True,
+		):
+			bound.setdefault(b["account"], {"games": set(), "roles": set()})
+			if b.game:
+				bound[b["account"]]["games"].add(b.game)
+			if b.role:
+				bound[b["account"]]["roles"].add(b.role)
+	for r in rows:
+		# Resolve the GAM Email *link* docname to its human-readable address.
+		# Own email wins; on-platform nodes without their own link inherit the
+		# parent platform's address. Raw `email` link is kept for form round-trips.
+		r["email_address"] = r.get("own_email_address") or r.get("parent_email_address") or ""
+		r["renewal_state"] = _renewal_state(r.billing_type, r.active_until, r.renewal_lead_days, now)
+		entry = bound.get(r["name"], {"games": set(), "roles": set()})
+		r["games"] = sorted(entry["games"])
+		r["roles"] = sorted(entry["roles"])
+	return rows
+
+
+def _renewal_state(billing_type, active_until, lead_days, now):
+	"""Classify an account's renewal urgency (plan §6 board buckets)."""
+	if not billing_type or billing_type == "ONE_TIME" or not active_until:
+		return "ONE_TIME"
+	try:
+		expiry = frappe.utils.get_datetime(active_until)
+	except Exception:
+		return "ONE_TIME"
+	lead = lead_days if lead_days is not None else 3
+	try:
+		lead = int(lead)
+	except (TypeError, ValueError):
+		lead = 3
+	window = frappe.utils.add_to_date(now, days=lead, as_datetime=True)
+	if expiry <= now:
+		return "OVERDUE"
+	if expiry <= window:
+		return "DUE"
+	return "OK"
+
+
+@frappe.whitelist()
+def renew_account(account, new_active_until, renewal_cost=None, notes=None, auto_renew=None):
+	"""Record a manual renewal for a PLATFORM or standalone GAME account.
+
+	Extends ``active_until``, stamps ``last_renewed_at``, writes a
+	``GAM Renewal Log`` row for cost reporting, and broadcasts
+	``gam_renewals_changed``. GAM Admin only.
+	"""
+	_require_gam_admin()
+	if not account or not new_active_until:
+		frappe.throw(_("account and new_active_until are required."))
+
+	doc = frappe.get_doc("GAM Account", account)
+	previous = doc.active_until
+	level = doc.account_level
+	billing = doc.billing_type or "ONE_TIME"
+
+	if billing == "ONE_TIME":
+		frappe.throw(
+			_("ONE_TIME accounts have no expiry to renew."),
+			title=_("Not Renewable"),
+		)
+
+	cost = 0
+	if renewal_cost not in (None, ""):
+		try:
+			cost = float(renewal_cost)
+		except (TypeError, ValueError):
+			cost = 0
+
+	new_dt = frappe.utils.get_datetime(new_active_until)
+	renewal_days = 0
+	try:
+		if previous:
+			renewal_days = (new_dt - frappe.utils.get_datetime(previous)).days
+	except Exception:
+		renewal_days = 0
+
+	doc.active_until = new_active_until
+	doc.last_renewed_at = frappe.utils.now_datetime()
+	doc.renewal_cost = cost
+	if auto_renew is not None:
+		doc.auto_renew = 1 if auto_renew else 0
+	doc.save(ignore_permissions=True)
+
+	log = frappe.new_doc("GAM Renewal Log")
+	log.account = account
+	log.account_level = level
+	log.billing_type = billing
+	log.previous_active_until = previous
+	log.new_active_until = new_active_until
+	log.renewal_days = renewal_days
+	log.renewal_cost = cost
+	log.auto_renew = 1 if (auto_renew or doc.auto_renew) else 0
+	log.renewed_by = frappe.session.user
+	log.renewed_at = frappe.utils.now_datetime()
+	log.notes = notes or ""
+	log.insert(ignore_permissions=True)
+
+	frappe.db.commit()
+	emit_renewals_changed(account)
+	emit_account_changed(account, "renew")
+	return {"renewed": True, "name": log.name, "active_until": new_active_until}
+
+
+@frappe.whitelist()
+def get_renewals(filters=None, limit_start=0, limit_page_length=50):
+	"""List GAM Renewal Log rows for the cost/renewal dashboard. GAM Admin only."""
+	_require_gam_admin()
+	if isinstance(filters, str):
+		filters = json.loads(filters) if filters else {}
+	filters = filters or {}
+
+	cond = []
+	vals = []
+	if filters.get("account"):
+		cond.append("account = %s")
+		vals.append(filters["account"])
+	if filters.get("billing_type"):
+		cond.append("billing_type = %s")
+		vals.append(filters["billing_type"])
+	if filters.get("renewed_by"):
+		cond.append("renewed_by = %s")
+		vals.append(filters["renewed_by"])
+	if filters.get("from_date"):
+		cond.append("renewed_at >= %s")
+		vals.append(filters["from_date"])
+	if filters.get("to_date"):
+		cond.append("renewed_at <= %s")
+		vals.append(filters["to_date"])
+	where = ("WHERE " + " AND ".join(cond)) if cond else ""
+
+	rows = frappe.db.sql(
+		"""
+		SELECT name, account, account_level, billing_type, previous_active_until,
+		       new_active_until, renewal_days, renewal_cost, auto_renew,
+		       renewed_by, renewed_at, notes
+		FROM `tabGAM Renewal Log`
+		{where}
+		ORDER BY renewed_at DESC
+		LIMIT %s, %s
+		""".format(where=where),
+		tuple(vals + [int(limit_start or 0), int(limit_page_length or 50)]),
+		as_dict=True,
+	)
+	total = frappe.db.count("GAM Renewal Log") if not cond else frappe.db.sql(
+		"SELECT COUNT(*) FROM `tabGAM Renewal Log` {where}".format(where=where),
+		tuple(vals),
+	)[0][0]
+	return {"items": rows, "total": total}
 
 
 # ============================================================================
