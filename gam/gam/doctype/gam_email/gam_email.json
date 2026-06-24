@@ -19,10 +19,16 @@
    "description": "Frappe encrypts this on save."
   },
   {
+   "fieldname": "totp_secret",
+   "fieldtype": "Password",
+   "label": "TOTP / 2FA Secret",
+   "description": "Authenticator secret for this email account (revealed via the audited reveal_password endpoint; already in REVEALABLE_FIELDS)."
+  },
+  {
    "fieldname": "provider",
    "fieldtype": "Select",
    "label": "Provider",
-   "options": "Gmail\nOutlook\nProton\nYahoo\nOther"
+   "options": "Gmail\nOutlook\nHotmail\nProton\nYahoo\nOther"
   },
   {
    "fieldname": "notes",

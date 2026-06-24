@@ -2474,6 +2474,24 @@ def save_email_account(values, name=None):
 	pwd = values.get("email_password")
 	if pwd:
 		doc.email_password = pwd
+	# OTP/2FA secret — same write-only Password pattern as email_password.
+	# Empty value = leave unchanged (so a save without re-entering it is safe).
+	totp = values.get("totp_secret")
+	if totp:
+		doc.totp_secret = totp
+
+	# Recovery-email child table — when provided, do a full replace so the
+	# editor can add/remove rows. Omit the key entirely to leave it untouched.
+	if "recovery_emails" in values:
+		doc.recovery_emails = []
+		for row in (values.get("recovery_emails") or []):
+			raddr = (row.get("address") or "").strip()
+			if not raddr:
+				continue
+			doc.append("recovery_emails", {
+				"address": raddr,
+				"label": (row.get("label") or "").strip(),
+			})
 
 	if name:
 		doc.save(ignore_permissions=True)
@@ -2498,10 +2516,13 @@ def delete_email_account(email_name):
 	_require_gam_admin()
 
 	# 1) Active game accounts must be reassigned first (business data).
+	# account_level + parent_account let the UI group them into PLATFORM vs
+	# GAME nodes (mirrors the email card / detail dependency tree).
 	linked = frappe.db.get_all(
 		"GAM Account",
 		filters={"email": email_name},
-		fields=["name", "username", "platform", "status"],
+		fields=["name", "username", "platform", "status",
+		        "account_level", "parent_account"],
 	)
 	if linked:
 		return {"blocked": True, "linked_accounts": linked}
@@ -2530,6 +2551,87 @@ def delete_email_account(email_name):
 
 	frappe.delete_doc("GAM Email", email_name, ignore_permissions=True)
 	return {"deleted": True, "unlinked": unlinked}
+
+
+@frappe.whitelist()
+def get_email_detail(name):
+	"""Full payload for the Email Account detail view (one call).
+
+	Returns the GAM Email doc (with raw Password fields stripped), ``has_*``
+	flags so the UI can render reveal affordances, the recovery-email child
+	rows, the dependent GAM Accounts grouped into PLATFORM vs GAME nodes,
+	and the most recent verification codes for this email.
+
+	Admin-only — the detail page exposes secrets via the audited reveal
+	endpoint, not here, so this payload itself carries no plaintext.
+	"""
+	_require_gam_admin()
+
+	email = frappe.get_doc("GAM Email", name).as_dict()
+	# Never expose raw Password field values via getDoc — they are disclosed
+	# only through the audited reveal_password endpoint.
+	email.pop("email_password", None)
+	email.pop("totp_secret", None)
+
+	has_email_password = bool(frappe.db.get_value("GAM Email", name, "email_password"))
+	has_totp_secret = bool(frappe.db.get_value("GAM Email", name, "totp_secret"))
+
+	all_linked = frappe.db.get_all(
+		"GAM Account",
+		filters={"email": name},
+		fields=["name", "username", "platform", "status",
+		        "account_level", "parent_account"],
+		order_by="platform asc, username asc",
+	)
+	platform_accounts = [a for a in all_linked if (a.account_level or "GAME") == "PLATFORM"]
+	game_accounts = [a for a in all_linked if (a.account_level or "GAME") != "PLATFORM"]
+
+	recent_codes = frappe.db.get_all(
+		"GAM Email Code",
+		filters={"email": name},
+		fields=["name", "code", "platform", "status", "received_at", "expires_at"],
+		order_by="received_at desc",
+		limit=5,
+	)
+
+	return {
+		"email": email,
+		"has_email_password": has_email_password,
+		"has_totp_secret": has_totp_secret,
+		"recovery_emails": email.get("recovery_emails", []),
+		"platform_accounts": platform_accounts,
+		"game_accounts": game_accounts,
+		"recent_codes": recent_codes,
+	}
+
+
+@frappe.whitelist()
+def get_email_dependencies(email_names):
+	"""Grouped dependent-account summary for a list of GAM Email names.
+
+	Powers the email card list without N+1 calls: one query returns the
+	dependent accounts for every visible email, grouped into PLATFORM vs
+	GAME nodes (mirrors get_email_detail / delete_email_account).
+
+	email_names: JSON array OR comma-separated string.
+	Returns: { <email_name>: {"platform": [...], "game": [...]} }
+	"""
+	_require_gam_admin()
+	names = _parse_dlc_list(email_names)  # tolerant list coercion
+	if not names:
+		return {}
+
+	rows = frappe.db.get_all(
+		"GAM Account",
+		filters={"email": ["in", names]},
+		fields=["email", "name", "username", "platform", "status", "account_level"],
+		order_by="platform asc, username asc",
+	)
+	out = {n: {"platform": [], "game": []} for n in names}
+	for r in rows:
+		key = "platform" if (r.account_level or "GAME") == "PLATFORM" else "game"
+		out.setdefault(r.email, {"platform": [], "game": []})[key].append(r)
+	return out
 
 
 def _parse_dlc_list(value):
