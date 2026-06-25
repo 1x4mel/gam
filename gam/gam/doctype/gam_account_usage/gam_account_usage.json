@@ -63,14 +63,40 @@
    "fieldname": "end_reason",
    "fieldtype": "Select",
    "label": "End Reason",
-   "options": "DONE\nCANCELLED\nTIMEOUT\nFORCE_RELEASED\nERROR"
+   "options": "DONE\nCANCELLED\nTIMEOUT\nFORCE_RELEASED\nHANDED_OFF\nERROR"
+  },
+  {
+   "fieldname": "chain_head",
+   "fieldtype": "Link",
+   "label": "Chain Head",
+   "options": "GAM Account Usage",
+   "description": "Lease đầu của chuỗi online liên tục (self nếu đầu chain). Dùng để tính tổng online liên tục của phiên khi bàn giao ca."
+  },
+  {
+   "fieldname": "prev_lease",
+   "fieldtype": "Link",
+   "label": "Previous Lease",
+   "options": "GAM Account Usage",
+   "description": "Lease ngay trước trong chain khi bàn giao ca (null = đầu chain)."
+  },
+  {
+   "fieldname": "handoff_by",
+   "fieldtype": "Link",
+   "label": "Handoff By",
+   "options": "User",
+   "description": "User đã bàn giao ca này cho used_by (đặt trên lease nhận mới)."
+  },
+  {
+   "fieldname": "handoff_at",
+   "fieldtype": "Datetime",
+   "label": "Handoff At"
   },
   {
    "fieldname": "notes",
    "fieldtype": "Small Text",
    "label": "Notes"
   }
- ],
+  ],
  "permissions": [
   {
    "role": "GAM Admin",

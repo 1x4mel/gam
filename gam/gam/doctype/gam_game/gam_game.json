@@ -23,8 +23,15 @@
    "label": "Is Active",
    "default": "1",
    "in_list_view": 1
+  },
+  {
+   "fieldname": "continuous_online_cap_hours",
+   "fieldtype": "Int",
+   "label": "Continuous Online Cap Hours (override)",
+   "non_negative": 1,
+   "description": "Override hạn online liên tục của chain cho game này (0 hoặc để trống = dùng giá trị global trong GAM Settings)."
   }
- ],
+  ],
  "permissions": [
   {
    "role": "GAM Admin",

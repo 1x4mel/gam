@@ -36,6 +36,7 @@ from frappe.utils import (
 from gam.realtime import (
 	emit_new_code,
 	emit_account_changed,
+	emit_handoff,
 	emit_role_sections_changed,
 	emit_renewals_changed,
 )
@@ -355,6 +356,9 @@ def checkout_account(account, purpose="LOGIN", lease_minutes=None, order_ref=Non
 		}
 	)
 	usage.insert(ignore_permissions=True)
+	# Start of a fresh online chain (not a handoff): this lease is its own head.
+	usage.db_set("chain_head", usage.name, update_modified=False)
+	usage.db_set("prev_lease", None, update_modified=False)
 	emit_account_changed(account, "checkin")
 	return usage.as_dict()
 
@@ -408,6 +412,7 @@ def _get_settings():
 			"max_online_hours": cint(doc.max_online_hours) or 8,
 			"min_rested_hours": cint(doc.min_rested_hours) or 8,
 			"hard_cap_online_hours": cint(doc.hard_cap_online_hours) or 12,
+			"continuous_online_cap_hours": cint(doc.continuous_online_cap_hours) or 16,
 			"block_logout_with_active_lease": cint(doc.block_logout_with_active_lease),
 			"grant_default_policy": (doc.grant_default_policy or "match_role"),
 		}
@@ -416,6 +421,7 @@ def _get_settings():
 			"max_online_hours": 8,
 			"min_rested_hours": 8,
 			"hard_cap_online_hours": 12,
+			"continuous_online_cap_hours": 16,
 			"block_logout_with_active_lease": 1,
 			"grant_default_policy": "match_role",
 		}
@@ -436,6 +442,7 @@ def save_gam_settings(
 	max_online_hours=None,
 	min_rested_hours=None,
 	hard_cap_online_hours=None,
+	continuous_online_cap_hours=None,
 	block_logout_with_active_lease=None,
 	grant_default_policy=None,
 ):
@@ -461,6 +468,7 @@ def save_gam_settings(
 		("max_online_hours", max_online_hours, 1, 168, 8),
 		("min_rested_hours", min_rested_hours, 0, 720, 8),
 		("hard_cap_online_hours", hard_cap_online_hours, 1, 168, 12),
+		("continuous_online_cap_hours", continuous_online_cap_hours, 1, 720, 16),
 	):
 		clamped = _clamp(value, lo, hi, default)
 		if clamped is not None:
@@ -523,6 +531,7 @@ def _active_usage_select(extra_where="", params=()):
 		         WHERE arg.account = a.name AND arg.is_main = 1
 		         ORDER BY arg.idx LIMIT 1) AS role,
 		       u.used_by, u.purpose, u.started_at, u.lease_until,
+		       u.prev_lease, u.handoff_by, u.handoff_at,
 		       uu.full_name AS used_by_full_name,
 		       (SELECT gg.game_name
 		          FROM `tabGAM Account Role Game` arg
@@ -687,6 +696,329 @@ def admin_force_release(account, reason=None):
 	frappe.db.commit()
 	emit_account_changed(account, "checkout")
 	return usage.as_dict()
+
+
+# ----------------------------------------------------------------------------
+# 3c. Shift handoff (bàn giao ca) + online session chain governance.
+#
+# A "chain" = a run of consecutive leases (via handoff) on ONE account with no
+# resting gap, tracked by `chain_head` (the first lease) + `prev_lease` (the
+# immediately preceding one). The chain's total online time is the true safety
+# signal that prevents an account from being kept online 24/7 across shifts
+# (ban risk). `continuous_online_cap_hours` (global or per-game override) caps
+# the chain: at/above it, handoff is refused (admin can force) and the
+# scheduler force-releases the lease.
+# ----------------------------------------------------------------------------
+def _resolve_continuous_cap_hours(account):
+	"""Global chain cap, optionally overridden by the account's main game."""
+	s = _get_settings()
+	cap = cint(s.get("continuous_online_cap_hours")) or 16
+	main_game = frappe.db.get_value(
+		"GAM Account Role Game", {"account": account, "is_main": 1}, "game"
+	)
+	if main_game:
+		try:
+			ov = cint(frappe.db.get_value("GAM Game", main_game, "continuous_online_cap_hours"))
+		except Exception:
+			ov = 0
+		if ov > 0:
+			cap = ov
+	return cap
+
+
+def _chain_online_seconds(account, now=None):
+	"""Total online seconds of the chain containing the account's current
+	IN_USE lease. Returns (seconds, active_lease_dict or None). A chain is the
+	set of usage rows sharing the same ``chain_head``; the running lease is
+	counted up to ``now`` (its ended_at is still null)."""
+	now = now or now_datetime()
+	active = frappe.db.get_value(
+		"GAM Account Usage",
+		{"account": account, "status": "IN_USE"},
+		["name", "chain_head", "started_at", "used_by", "order_ref"],
+		as_dict=True,
+	)
+	if not active:
+		return 0, None
+	head = active.chain_head or active.name
+	rows = frappe.db.get_all(
+		"GAM Account Usage",
+		filters={"chain_head": head},
+		fields=["started_at", "ended_at"],
+	)
+	total = 0.0
+	for r in rows:
+		start = r.get("started_at")
+		end = r.get("ended_at") or now
+		if not start:
+			continue
+		total += max(0.0, (end - start).total_seconds())
+	return total, active
+
+
+@frappe.whitelist()
+def get_chain_online(account):
+	"""Chain-online telemetry for the active lease of ``account`` (L2 gated).
+
+	Returns {chain_online_seconds, cap_hours, cap_seconds, remaining_seconds,
+	over_cap, percent}. Drives the handoff modal warning + the per-card
+	"online liên tục" indicator in the active view."""
+	_require_account_access(account)
+	cap_hours = _resolve_continuous_cap_hours(account)
+	cap_seconds = cap_hours * 3600
+	online_seconds, _active = _chain_online_seconds(account)
+	remaining = max(0, cap_seconds - online_seconds)
+	return {
+		"chain_online_seconds": int(online_seconds),
+		"cap_hours": cap_hours,
+		"cap_seconds": cap_seconds,
+		"remaining_seconds": int(remaining),
+		"over_cap": online_seconds >= cap_seconds,
+		"percent": int(round((online_seconds / cap_seconds) * 100)) if cap_seconds else 0,
+	}
+
+
+@frappe.whitelist()
+def get_handoff_candidates(account):
+	"""Users who may RECEIVE this account in a handoff (L2 gated for the
+	caller): enabled GAM users whose grants intersect the account's bindings,
+	excluding the current lease holder. Member-friendly (unlike the admin-only
+	``get_gam_users``)."""
+	_require_account_access(account)
+	account = (account or "").strip()
+	holder = frappe.db.get_value(
+		"GAM Account Usage", {"account": account, "status": "IN_USE"}, "used_by"
+	)
+	keys = _account_grant_keys_for(account)
+	rows = frappe.db.sql(
+		"""
+		SELECT DISTINCT usr.name, usr.full_name
+		FROM `tabUser` usr
+		INNER JOIN `tabHas Role` hr
+		  ON hr.parent = usr.name AND hr.parenttype = 'User'
+		WHERE usr.enabled = 1
+		  AND usr.name NOT IN ('Guest', 'Administrator')
+		  AND hr.role IN ('GAM Member', 'GAM Admin', 'System Manager')
+		ORDER BY usr.full_name, usr.name
+		""",
+		as_dict=True,
+	)
+	out = []
+	for r in rows:
+		name = r["name"]
+		if name == holder:
+			continue
+		if _has_any_role_game_grant_for(name, keys):
+			out.append({"name": name, "full_name": r.get("full_name") or name})
+	return out
+
+
+def _handoff_close_and_open(active, account, to_user, order_ref, notes, force, is_admin):
+	"""Atomic (within a single committed transaction) close of the holder's
+	lease + open of the receiver's lease on the SAME chain. Re-checks the
+	holder lease is still IN_USE to defeat concurrent handoffs."""
+	now = now_datetime()
+	# Re-read the active lease under the current tx to detect a concurrent change.
+	current = frappe.db.get_value(
+		"GAM Account Usage", active["name"], ["name", "status", "used_by"], as_dict=True
+	)
+	if not current or current.status != "IN_USE":
+		frappe.throw(
+			_("This account is no longer checked out (concurrent change)."),
+		)
+
+	cap_hours = _resolve_continuous_cap_hours(account)
+	cap_seconds = cap_hours * 3600
+	online_seconds, _chain_active = _chain_online_seconds(account, now)
+	if online_seconds >= cap_seconds and not (force and is_admin):
+		frappe.throw(
+			_(
+				"Tài khoản đã online liên tục {0}h (cap {1}h). Hãy checkout để tài khoản nghỉ trước khi bàn giao — tránh bị ban vì online quá nhiều."
+			).format(round(online_seconds / 3600, 1), cap_hours),
+		)
+
+	settings = _get_settings()
+	hard_cap = cint(settings.get("hard_cap_online_hours")) or 12
+	lease_until = add_to_date(now, hours=hard_cap)
+	head = active.get("chain_head") or active["name"]
+	inherited_order = order_ref or active.get("order_ref") or ""
+
+	# 1) Close the holder's lease — marked HANDED_OFF (no online gap).
+	old = frappe.get_doc("GAM Account Usage", active["name"])
+	old.status = "RELEASED"
+	old.end_reason = "HANDED_OFF"
+	old.ended_at = now
+	if notes:
+		existing = (old.notes or "").strip()
+		old.notes = (existing + "\n" if existing else "") + str(notes)[:280]
+	old.save(ignore_permissions=True)
+
+	# 2) Open the receiver's lease continuing the same chain.
+	new = frappe.get_doc(
+		{
+			"doctype": "GAM Account Usage",
+			"account": account,
+			"status": "IN_USE",
+			"used_by": to_user,
+			"purpose": "HANDOFF",
+			"order_ref": inherited_order,
+			"started_at": now,
+			"lease_until": lease_until,
+			"notes": str(notes)[:280] if notes else "",
+		}
+	)
+	new.insert(ignore_permissions=True)
+	new.db_set("chain_head", head, update_modified=False)
+	new.db_set("prev_lease", active["name"], update_modified=False)
+	new.db_set("handoff_by", frappe.session.user, update_modified=False)
+	new.db_set("handoff_at", now, update_modified=False)
+	frappe.db.commit()
+	return new, online_seconds, cap_hours
+
+
+@frappe.whitelist()
+def handoff_account(account, to_user, order_ref=None, notes=None, force=None):
+	"""Hand the active lease of ``account`` over to ``to_user`` WITHOUT ending
+	the online session — the receiver's lease continues the same chain
+	(``prev_lease`` + shared ``chain_head``). UI label: "Bàn giao ca".
+
+	Permission model:
+	  - the caller (session) must have L2 access to the account;
+	  - AND be either the current lease holder OR an admin;
+	  - the receiver must independently have L2 access to the account.
+	The continuous-online cap blocks a handoff that would keep an account
+	online past the chain cap unless an admin forces it (audited in notes)."""
+	account = (account or "").strip()
+	to_user = (to_user or "").strip()
+	_require_account_access(account)
+	if not frappe.db.exists("GAM Account", account):
+		frappe.throw(_("Account not found."), frappe.PermissionError)
+	is_admin = _is_access_admin()
+
+	active = frappe.db.get_value(
+		"GAM Account Usage",
+		{"account": account, "status": "IN_USE"},
+		["name", "chain_head", "used_by", "order_ref"],
+		as_dict=True,
+	)
+	if not active:
+		frappe.throw(_("This account is not currently checked in."))
+	if active.used_by != frappe.session.user and not is_admin:
+		frappe.throw(
+			_("Only the current holder or an admin may hand off this account."),
+			frappe.PermissionError,
+		)
+	if not to_user:
+		frappe.throw(_("A target user is required."))
+	if to_user == active.used_by:
+		frappe.throw(_("You cannot hand off to the current holder."))
+	if not frappe.db.get_value("User", to_user, "enabled"):
+		frappe.throw(_("Target user is disabled or does not exist."))
+	# Receiver L2 gate (explicit user, not session).
+	if not _has_any_role_game_grant_for(to_user, _account_grant_keys_for(account)):
+		frappe.throw(
+			_("The target user does not have access to this account."),
+			frappe.PermissionError,
+		)
+
+	force_flag = bool(cint(force))
+	new_lease, online_seconds, cap_hours = _handoff_close_and_open(
+		active, account, to_user, order_ref, notes, force_flag, is_admin
+	)
+	if force_flag and is_admin and online_seconds >= cap_hours * 3600:
+		audit = "Admin-forced handoff past chain cap ({0}h/{1}h).".format(
+			round(online_seconds / 3600, 1), cap_hours
+		)
+		existing = (new_lease.notes or "").strip()
+		new_lease.db_set("notes", (existing + "\n" if existing else "") + audit, update_modified=False)
+
+	emit_handoff(account, from_user=frappe.session.user, to_user=to_user, action="handoff")
+	emit_account_changed(account, "handoff")
+	return {
+		"new_lease": new_lease.as_dict(),
+		"chain_online_seconds": int(online_seconds),
+		"cap_hours": cap_hours,
+	}
+
+
+@frappe.whitelist()
+def decline_handoff(account, notes=None):
+	"""The receiver declines a just-received shift. Closes the receiver's lease
+	and reopens a continuing-chain lease for the previous holder so the online
+	session is preserved for them. The caller must be the current holder (i.e.
+	the receiver of the most recent handoff)."""
+	account = (account or "").strip()
+	_require_account_access(account)
+	is_admin = _is_access_admin()
+	active = frappe.db.get_value(
+		"GAM Account Usage",
+		{"account": account, "status": "IN_USE"},
+		["name", "chain_head", "used_by", "prev_lease", "handoff_by"],
+		as_dict=True,
+	)
+	if not active:
+		frappe.throw(_("This account is not currently checked in."))
+	if active.used_by != frappe.session.user and not is_admin:
+		frappe.throw(
+			_("Only the current holder may decline this shift."),
+			frappe.PermissionError,
+		)
+	if not active.get("handoff_by"):
+		frappe.throw(_("This lease was not received via a handoff."))
+	prev_name = active.get("prev_lease")
+	if not prev_name:
+		frappe.throw(_("No previous holder to return this shift to."))
+	# The previous holder is whoever held the immediately preceding lease, NOT
+	# the user who triggered the handoff (an admin may have handed off on behalf
+	# of a member).
+	prev_holder = frappe.db.get_value("GAM Account Usage", prev_name, "used_by")
+	if not prev_holder:
+		frappe.throw(_("No previous holder to return this shift to."))
+	# Receiver must still have access (sanity).
+	if not _has_any_role_game_grant_for(
+		prev_holder, _account_grant_keys_for(account)
+	):
+		frappe.throw(
+			_("The previous holder no longer has access to this account."),
+			frappe.PermissionError,
+		)
+
+	now = now_datetime()
+	settings = _get_settings()
+	hard_cap = cint(settings.get("hard_cap_online_hours")) or 12
+	lease_until = add_to_date(now, hours=hard_cap)
+	head = active.get("chain_head") or active["name"]
+
+	old = frappe.get_doc("GAM Account Usage", active["name"])
+	old.status = "RELEASED"
+	old.end_reason = "HANDED_OFF"
+	old.ended_at = now
+	if notes:
+		existing = (old.notes or "").strip()
+		old.notes = (existing + "\n" if existing else "") + "Declined: " + str(notes)[:240]
+	old.save(ignore_permissions=True)
+
+	reopened = frappe.get_doc(
+		{
+			"doctype": "GAM Account Usage",
+			"account": account,
+			"status": "IN_USE",
+			"used_by": prev_holder,
+			"purpose": "HANDOFF_RETURN",
+			"order_ref": old.order_ref or "",
+			"started_at": now,
+			"lease_until": lease_until,
+		}
+	)
+	reopened.insert(ignore_permissions=True)
+	reopened.db_set("chain_head", head, update_modified=False)
+	reopened.db_set("prev_lease", active["name"], update_modified=False)
+	reopened.db_set("handoff_by", frappe.session.user, update_modified=False)
+	reopened.db_set("handoff_at", now, update_modified=False)
+	frappe.db.commit()
+	emit_handoff(account, from_user=frappe.session.user, to_user=prev_holder, action="declined")
+	emit_account_changed(account, "handoff")
+	return reopened.as_dict()
 
 
 # ============================================================================
@@ -879,10 +1211,16 @@ def _frappe_role_matches_role_value(role_value):
 	this Account Role value (case-insensitive), directly OR via the GAM List
 	Option label? Mirrors the legacy sidebar scoping (AppLayout.roleSections),
 	which matched the option LABEL against the user's Frappe roles."""
+	return _frappe_role_matches_role_value_for(frappe.session.user, role_value)
+
+
+def _frappe_role_matches_role_value_for(user, role_value):
+	"""Per-user variant of ``_frappe_role_matches_role_value`` — used by shift
+	handoff to evaluate the match_role fallback for an explicit receiver user."""
 	role_value = (role_value or "").strip()
-	if not role_value:
+	if not role_value or not user:
 		return False
-	roles = {str(r).lower() for r in frappe.get_roles()}
+	roles = {str(r).lower() for r in frappe.get_roles(user)}
 	if role_value.lower() in roles:
 		return True
 	try:
@@ -937,6 +1275,46 @@ def _require_access(app, scope, key):
 # on an account/email whose (role, game) bindings intersect their grants
 # (admins bypass; match_role fallback when the user has zero grants).
 # ---------------------------------------------------------------------------
+def _has_any_role_game_grant_for(user, allowed_keys):
+	"""Per-user variant of ``_has_any_role_game_grant``. Evaluates access for an
+	explicit ``user`` (not necessarily the session user) — needed by shift-handoff
+	to verify the RECEIVER has access to the account without switching sessions.
+
+	Admin bypass is evaluated via that user's roles so an admin receiver always
+	qualifies."""
+	if not user:
+		return False
+	# Admin bypass is evaluated FIRST (mirrors the legacy ``_is_access_admin``
+	# ordering) so an admin can act on an account that has NO (role, game)
+	# bindings yet (empty ``allowed_keys`` must not block them). Note: the
+	# explicit-arg ``frappe.get_roles("Administrator")`` does NOT return the
+	# implicit all-roles set the no-arg session form does, so we short-circuit.
+	if user == "Administrator":
+		return True
+	adm = set(frappe.get_roles(user)) & {
+		"GAM Admin", "System Manager", "Administrator"
+	}
+	if adm:
+		return True
+	if not allowed_keys:
+		return False
+	user_keys = _user_grant_keys(user)
+	if user_keys & allowed_keys:
+		return True
+	if not user_keys and _get_grant_default_policy() == "match_role":
+		# match_role fallback: the target user holds a Frappe role matching any
+		# role bound to the account.
+		roles = set()
+		for k in allowed_keys:
+			parts = k.split("|", 2)
+			if len(parts) >= 2 and parts[1]:
+				roles.add(parts[1])
+		for role_value in roles:
+			if _frappe_role_matches_role_value_for(user, role_value):
+				return True
+	return False
+
+
 def _has_any_role_game_grant(allowed_keys):
 	"""True iff the session user may access at least one of ``allowed_keys``
 	(a set of ``ROLE_GAME|<role>|<game>`` strings). Mirrors ``has_access`` but
@@ -944,25 +1322,7 @@ def _has_any_role_game_grant(allowed_keys):
 
 	Admin bypass is evaluated FIRST so an admin can act on an account that has
 	no (role, game) bindings yet."""
-	if _is_access_admin():
-		return True
-	if not allowed_keys:
-		return False
-	user_keys = _user_grant_keys(frappe.session.user)
-	if user_keys & allowed_keys:
-		return True
-	if not user_keys and _get_grant_default_policy() == "match_role":
-		# match_role fallback: grant access when the user holds a Frappe role
-		# matching any role bound to the account.
-		roles = set()
-		for k in allowed_keys:
-			parts = k.split("|", 2)
-			if len(parts) >= 2 and parts[1]:
-				roles.add(parts[1])
-		for role_value in roles:
-			if _frappe_role_matches_role_value(role_value):
-				return True
-	return False
+	return _has_any_role_game_grant_for(frappe.session.user, allowed_keys)
 
 
 def _account_grant_keys_for(account_name):

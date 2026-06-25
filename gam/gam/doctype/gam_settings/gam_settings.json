@@ -29,6 +29,14 @@
    "non_negative": 1
   },
   {
+   "fieldname": "continuous_online_cap_hours",
+   "fieldtype": "Int",
+   "label": "Continuous Online Cap Hours (chain)",
+   "default": "16",
+   "description": "Hạn cứng online liên tục của cả chuỗi bàn giao ca (giờ). Vượt qua sẽ chặn handoff và scheduler tự force-release để tránh tài khoản bị ban vì online quá nhiều.",
+   "non_negative": 1
+  },
+  {
    "fieldname": "block_logout_with_active_lease",
    "fieldtype": "Check",
    "label": "Warn On Logout With Active Lease",

@@ -62,6 +62,32 @@ def emit_role_sections_changed():
 		frappe.log_error("gam: emit_role_sections_changed failed")
 
 
+def emit_handoff(account=None, from_user=None, to_user=None, action="handoff"):
+	"""Broadcast a shift handoff (bàn giao ca) between users.
+
+	`action` is one of: ``handoff`` (lease transferred), ``declined`` (the
+	receiver declined and the lease was reopened for the previous holder).
+
+	The gam-ui SPA listens on ``gam_handoff``:
+	  - the receiver (``to_user``) gets a toast "Account X vừa được bàn giao cho bạn".
+	  - AppLayout / useActiveUsage refresh the "Đang hoạt động" tab + sidebar badge.
+	"""
+	try:
+		frappe.publish_realtime(
+			"gam_handoff",
+			{
+				"account": account,
+				"from_user": from_user,
+				"to_user": to_user,
+				"action": action,
+				"user": frappe.session.user,
+			},
+			broadcast=True,
+		)
+	except Exception:
+		frappe.log_error("gam: emit_handoff failed")
+
+
 def emit_renewals_changed(account=None):
 	"""Broadcast that the renewals/expiry board changed.
 

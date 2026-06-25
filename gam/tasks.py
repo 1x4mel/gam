@@ -20,15 +20,51 @@ def expire_email_codes():
 
 
 def force_release_leases():
-	"""Force-release IN_USE account leases past their lease_until (Design §4B)."""
+	"""Force-release IN_USE account leases past their lease_until (Design §4B),
+	AND any lease whose online *chain* has hit the continuous-online cap.
+
+	The chain cap (global ``continuous_online_cap_hours`` or per-game override)
+	is the real ban-prevention safety net: a forgotten handoff chain would
+	otherwise keep an account online 24/7 across shifts. The cap is enforced
+	lazily on handoff, but this sweep catches chains that are never handed off
+	again (or whose holder abandoned the session)."""
+	# Local import to avoid a heavy import at module load.
+	from gam.api import _chain_online_seconds, _resolve_continuous_cap_hours
+
 	now = now_datetime()
+
+	# 1) Past lease_until (existing behaviour).
 	names = frappe.get_all(
 		"GAM Account Usage",
 		filters={"status": "IN_USE", "lease_until": ["<", now]},
 		pluck="name",
 	)
-	for name in names:
+
+	# 2) Over the continuous-online chain cap.
+	over_cap = []
+	if frappe.db.has_column("GAM Account Usage", "chain_head"):
+		active = frappe.get_all(
+			"GAM Account Usage",
+			filters={"status": "IN_USE"},
+			fields=["name", "account"],
+		)
+		seen_accounts = set()
+		for row in active:
+			if row["account"] in seen_accounts:
+				continue
+			seen_accounts.add(row["account"])
+			try:
+				online_seconds, _ = _chain_online_seconds(row["account"], now)
+			except Exception:
+				continue
+			cap_seconds = _resolve_continuous_cap_hours(row["account"]) * 3600
+			if cap_seconds > 0 and online_seconds >= cap_seconds:
+				over_cap.append(row["name"])
+
+	for name in list(dict.fromkeys(names + over_cap)):
 		usage = frappe.get_doc("GAM Account Usage", name)
+		if usage.status != "IN_USE":
+			continue
 		usage.status = "FORCE_RELEASED"
 		usage.ended_at = now
 		usage.end_reason = "TIMEOUT"

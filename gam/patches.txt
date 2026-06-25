@@ -9,3 +9,4 @@ gam.patches.backfill_game_server_name
 gam.patches.ensure_account_role_roles
 gam.patches.migrate_account_role_game
 gam.patches.purge_orphan_account_role_game
+gam.patches.backfill_usage_chain
