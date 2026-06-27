@@ -92,11 +92,28 @@
    "label": "Handoff At"
   },
   {
+   "fieldname": "ip_address",
+   "fieldtype": "Data",
+   "label": "IP Address",
+   "description": "Where the checkout/login originated (security audit)."
+  },
+  {
+   "fieldname": "user_agent",
+   "fieldtype": "Small Text",
+   "label": "User Agent"
+  },
+  {
+   "fieldname": "device",
+   "fieldtype": "Data",
+   "label": "Device",
+   "description": "Parsed UA short label (browser / OS)."
+  },
+  {
    "fieldname": "notes",
    "fieldtype": "Small Text",
    "label": "Notes"
   }
-  ],
+ ],
  "permissions": [
   {
    "role": "GAM Admin",

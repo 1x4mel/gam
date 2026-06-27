@@ -126,6 +126,65 @@ def reveal_password(doctype, name, fieldname, action="REVEAL"):
 	return {"password": password}
 
 
+def _parse_device(user_agent):
+	"""Short 'browser / OS' label from a User-Agent string (no heavy deps)."""
+	if not user_agent:
+		return ""
+	browser = "Other"
+	for token, label in (
+		("Edg", "Edge"), ("Chrome", "Chrome"), ("Firefox", "Firefox"), ("Safari", "Safari"),
+	):
+		if token in user_agent:
+			browser = label
+			break
+	os_name = "Other"
+	for token, label in (
+		("Windows", "Windows"), ("Android", "Android"),
+		("iPhone", "iOS"), ("Mac OS", "macOS"), ("Linux", "Linux"),
+	):
+		if token in user_agent:
+			os_name = label
+			break
+	return f"{browser} / {os_name}"
+
+
+def _capture_request_context():
+	"""Best-effort client context for security audit logs.
+
+	Returns ``{ip, user_agent, device}``. IP prefers the Cloudflare tunnel
+	header (``CF-Connecting-IP``) then the first hop of ``X-Forwarded-For``,
+	falling back to ``remote_addr``. ``device`` is a short UA label.
+	"""
+	request = getattr(frappe.local, "request", None)
+	ip = user_agent = ""
+	if request is not None:
+		ip = (
+			request.headers.get("CF-Connecting-IP")
+			or request.headers.get("X-Forwarded-For")
+			or request.remote_addr
+			or ""
+		)
+		ip = ip.split(",")[0].strip()[:140]
+		user_agent = (request.headers.get("User-Agent") or "")[:1400]
+	return {"ip": ip, "user_agent": user_agent, "device": _parse_device(user_agent)}
+
+
+def _active_lease(user, account):
+	"""The current IN_USE checkout lease for (user, account), if any.
+
+	Session-correlation key: code requests / reveals during an active lease are
+	tagged with it so the audit timeline can reconstruct a login session.
+	"""
+	if not user or not account:
+		return None
+	return frappe.db.get_value(
+		"GAM Account Usage",
+		{"used_by": user, "account": account, "status": "IN_USE"},
+		"name",
+		order_by="started_at desc",
+	)
+
+
 def _log_reveal(doctype, name, fieldname, action):
 	"""Persist a Reveal-Log audit row.
 
@@ -135,12 +194,16 @@ def _log_reveal(doctype, name, fieldname, action):
 	rollback, record via ``frappe.log_error`` for diagnosis, and re-raise so
 	the caller does not return the password.
 	"""
-	request = getattr(frappe.local, "request", None)
-	ip = ""
-	user_agent = ""
-	if request is not None:
-		ip = request.headers.get("X-Forwarded-For") or request.remote_addr or ""
-		user_agent = (request.headers.get("User-Agent") or "")[:1400]
+	ctx = _capture_request_context()
+	# Resolve the active lease for the target so the timeline can group this
+	# reveal into the login session that authorized it.
+	usage_lease = ""
+	if doctype == "GAM Account":
+		usage_lease = _active_lease(frappe.session.user, name) or ""
+	elif doctype == "GAM Email":
+		acc = frappe.db.get_value("GAM Account", {"email": name}, "name")
+		if acc:
+			usage_lease = _active_lease(frappe.session.user, acc) or ""
 
 	try:
 		frappe.get_doc(
@@ -151,8 +214,9 @@ def _log_reveal(doctype, name, fieldname, action):
 				"target_doctype": doctype,
 				"target_name": name,
 				"fieldname": fieldname,
-				"ip_address": (ip or "").split(",")[0].strip()[:140],
-				"user_agent": user_agent,
+				"ip_address": ctx["ip"],
+				"user_agent": ctx["user_agent"],
+				"usage_lease": usage_lease,
 				"viewed_at": now_datetime(),
 			}
 		).insert(ignore_permissions=True)
@@ -173,7 +237,7 @@ def _log_reveal(doctype, name, fieldname, action):
 @rate_limit(limit=30, seconds=60)
 def request_code(email_name=None, account_name=None, platform=None):
 
-	target_email, target_account, resolved_platform = _resolve_request_target(
+	target_email, target_account, resolved_platform, resolved_game = _resolve_request_target(
 		email_name, account_name, platform
 	)
 
@@ -185,7 +249,10 @@ def request_code(email_name=None, account_name=None, platform=None):
 		_require_email_access(target_email)
 
 	now = now_datetime()
-	claimed = _claim_latest_code(target_email, resolved_platform, now)
+	# Security-audit context: denormalized account fields + active checkout lease
+	# so the Code Request Log is self-contained and session-correlatable.
+	audit = _gather_code_request_audit(target_account, resolved_game)
+	claimed = _claim_latest_code(target_email, resolved_platform, now, resolved_game)
 
 	if claimed:
 		status = "FULFILLED"
@@ -196,6 +263,8 @@ def request_code(email_name=None, account_name=None, platform=None):
 			code_value=claimed["code"],
 			status=status,
 			email_code=claimed["name"],
+			code_expires_at=claimed["expires_at"],
+			**audit,
 		)
 		return {
 			"status": "ok",
@@ -211,34 +280,96 @@ def request_code(email_name=None, account_name=None, platform=None):
 		code_value="",
 		status="NO_CODE",
 		email_code=None,
+		**audit,
 	)
 	return {"status": "no_code"}
+
+
+def _gather_code_request_audit(target_account, resolved_game):
+	"""Denormalized account username/email + active lease for the audit log."""
+	out = {"game": resolved_game or "", "account_username": "", "account_email_address": "", "usage_lease": ""}
+	if target_account:
+		acc = frappe.db.get_value("GAM Account", target_account, ["username", "email"], as_dict=True)
+		if acc:
+			out["account_username"] = acc.username or ""
+			if acc.email:
+				out["account_email_address"] = frappe.db.get_value("GAM Email", acc.email, "address") or ""
+		out["usage_lease"] = _active_lease(frappe.session.user, target_account) or ""
+	return out
+
+
+def _resolve_account_game(account_name):
+	"""Best-effort: the account's main bound game (for game-aware claim).
+
+	Returns "" when the account has no role-game binding (a pure PLATFORM-level
+	account) so the platform-level code (``game`` NULL) is claimed.
+	"""
+	if not account_name:
+		return ""
+	for flt in (
+		[["account", "=", account_name], ["is_main", "=", 1]],
+		[["account", "=", account_name]],
+	):
+		g = frappe.db.get_value("GAM Account Role Game", flt, "game")
+		if g:
+			return g
+	return ""
 
 
 def _resolve_request_target(email_name, account_name, platform):
 	target_email = email_name
 	target_account = account_name or None
 	resolved_platform = platform
+	resolved_game = ""
 
 	if account_name:
 		acc = frappe.db.get_value(
-			"GAM Account", account_name, ["email", "platform"], as_dict=True
+			"GAM Account", account_name,
+			["email", "platform", "account_level", "parent_account"],
+			as_dict=True,
 		)
 		if not acc:
 			frappe.throw(_("Account {0} not found").format(account_name))
+		# A GAME node on a platform inherits email from its parent but may not
+		# mirror the platform value — walk up to the parent PLATFORM node so the
+		# claim filter is never empty (an empty platform filter would leak codes
+		# from a different publisher sharing the same email).
+		if acc.account_level == "GAME" and acc.parent_account:
+			parent = frappe.db.get_value(
+				"GAM Account", acc.parent_account, ["email", "platform"], as_dict=True
+			)
+			if parent:
+				acc.email = acc.email or parent.email
+				acc.platform = acc.platform or parent.platform
 		target_email = acc.email
 		if not resolved_platform and acc.platform:
 			resolved_platform = _platform_to_code_platform(acc.platform)
+		resolved_game = _resolve_account_game(account_name)
 
 	if not target_email:
 		frappe.throw(_("Could not resolve a target email for this request."))
 
-	return target_email, target_account, resolved_platform
+	return target_email, target_account, resolved_platform, resolved_game
 
 
-def _claim_latest_code(target_email, platform, now):
-	"""Atomically claim the freshest AVAILABLE code with SELECT ... FOR UPDATE."""
+def _claim_latest_code(target_email, platform, now, game=""):
+	"""Atomically claim the freshest AVAILABLE code (FOR UPDATE), game-aware.
+
+	``game`` is a best-effort preference, not a hard gate: when set, an exact
+	``game`` match wins, then platform-level codes (``game`` NULL/blank) are the
+	fallback — so a Diablo 4 game node still gets the shared Battle.net
+	platform-level code. When ``game`` is blank only the platform filter applies
+	(unchanged legacy behaviour).
+	"""
 	platform_clause = " AND platform = %(platform)s" if platform else ""
+	game_clause = (
+		" AND (%(game)s = '' OR game = %(game)s OR IFNULL(game, '') = '')"
+		if game else ""
+	)
+	game_pref = (
+		"CASE WHEN %(game)s <> '' AND game = %(game)s THEN 0 ELSE 1 END, "
+		if game else ""
+	)
 	row = frappe.db.sql(
 		f"""
 		SELECT name
@@ -247,11 +378,12 @@ def _claim_latest_code(target_email, platform, now):
 		  AND expires_at > %(now)s
 		  AND email = %(email)s
 		  {platform_clause}
-		ORDER BY received_at DESC
+		  {game_clause}
+		ORDER BY {game_pref}received_at DESC
 		LIMIT 1
 		FOR UPDATE
 		""",
-		{"now": now, "email": target_email, "platform": platform},
+		{"now": now, "email": target_email, "platform": platform, "game": game or ""},
 		as_dict=True,
 	)
 	if not row:
@@ -271,13 +403,18 @@ def _claim_latest_code(target_email, platform, now):
 	}
 
 
-def _log_code_request(target_email, target_account, platform, code_value, status, email_code):
+def _log_code_request(target_email, target_account, platform, code_value, status, email_code,
+                      game="", account_username="", account_email_address="",
+                      usage_lease="", code_expires_at=None):
 	"""Persist a Code-Request-Log audit row.
 
 	Fail-closed (P1.5): a logging failure aborts the request so a code is never
 	handed out without a surviving audit row. If the insert fails we rollback
 	(also undoing the code's CLAIMED transition, leaving it AVAILABLE for a
-	retry), record the error, and re-raise."""
+	retry), record the error, and re-raise. Captures IP/UA/device, the resolved
+	game, denormalized account fields and the active ``usage_lease`` so the
+	security-audit timeline can reconstruct the session."""
+	ctx = _capture_request_context()
 	try:
 		frappe.get_doc(
 			{
@@ -289,6 +426,13 @@ def _log_code_request(target_email, target_account, platform, code_value, status
 				"platform": platform or "",
 				"code_value": code_value or "",
 				"status": status,
+				"game": game or "",
+				"account_username": account_username or "",
+				"account_email_address": account_email_address or "",
+				"usage_lease": usage_lease or "",
+				"ip_address": ctx["ip"],
+				"user_agent": ctx["user_agent"],
+				"code_expires_at": code_expires_at,
 				"requested_at": now_datetime(),
 			}
 		).insert(ignore_permissions=True)
@@ -342,6 +486,8 @@ def checkout_account(account, purpose="LOGIN", lease_minutes=None, order_ref=Non
 		hard_cap = cint(_get_settings().get("hard_cap_online_hours")) or 12
 		lease_until = add_to_date(now, hours=hard_cap)
 
+	# Security audit: where the checkout/login originated.
+	_audit_ctx = _capture_request_context()
 	usage = frappe.get_doc(
 		{
 			"doctype": "GAM Account Usage",
@@ -352,6 +498,9 @@ def checkout_account(account, purpose="LOGIN", lease_minutes=None, order_ref=Non
 			"order_ref": order_ref or "",
 			"started_at": now,
 			"lease_until": lease_until,
+			"ip_address": _audit_ctx["ip"],
+			"user_agent": _audit_ctx["user_agent"],
+			"device": _audit_ctx["device"],
 			"notes": notes or "",
 		}
 	)
@@ -1713,7 +1862,7 @@ def get_accounts_list(filters=None, limit_start=0, limit_page_length=20):
 		SELECT a.name AS name, a.platform, a.username, a.email, a.source,
 		       a.status, a.account_level, a.parent_account, a.standalone,
 		       a.billing_type, a.active_until, a.renewal_lead_days,
-		       a.auto_renew
+		       a.auto_renew, a.ign, a.btag
 		FROM `tabGAM Account` a
 		WHERE {where}
 		ORDER BY a.modified DESC
@@ -1804,6 +1953,29 @@ def get_accounts_list(filters=None, limit_start=0, limit_page_length=20):
 				rested_h = 0.0
 		a["rested_hours"] = rested_h
 		a["is_rested_enough"] = 1 if rested_h >= min_rested else 0
+
+	# --- fresh-code signal ------------------------------------------------
+	# Which emails currently have an AVAILABLE, unexpired GAM Email Code, so the
+	# account cards can glow WITHOUT relying solely on the live `gam_new_code`
+	# realtime event (which is fire-and-forget — missed if the page is opened
+	# after the webhook landed). One batched IN() query, never N+1.
+	emails_with_code = set()
+	if accounts:
+		_em_list = [a.get("email") for a in accounts if a.get("email")]
+		if _em_list:
+			for r in frappe.db.sql(
+				"""
+				SELECT DISTINCT email
+				FROM `tabGAM Email Code`
+				WHERE email IN %s
+				  AND status = 'AVAILABLE'
+				  AND (expires_at IS NULL OR expires_at > NOW())
+				""",
+				(_em_list,), as_dict=True,
+			):
+				emails_with_code.add(r["email"])
+	for a in accounts:
+		a["has_available_code"] = 1 if a.get("email") in emails_with_code else 0
 
 	return {"data": accounts, "total": cint(total)}
 
@@ -2109,9 +2281,15 @@ def get_email_codes(filters=None, limit_start=0, limit_page_length=20, order_by=
 		if not accessible:
 			return {"data": [], "total": 0}
 		filters.append(["email", "in", list(accessible)])
+	# ``email.address`` is Frappe's dotted link-field join: resolves GAM Email
+	# Code.email (Link → GAM Email) and pulls GAM Email.address — the real
+	# platform account address (e.g. merisede3379@hotmail.com). Distinct from
+	# ``email_address`` (the fallback inbound inbox, gam@gegeteam.xyz); NULL when
+	# the code was not matched to a GAM Email doc.
 	fields = [
 		"name", "platform", "code", "status", "email", "email_address",
 		"email_from", "email_subject", "received_at", "expires_at", "claimed_by",
+		"email.address as platform_email",
 	]
 	data = frappe.get_all(
 		"GAM Email Code",
@@ -2275,6 +2453,12 @@ def _ingest_email_payload(data):
 
 	original_to = (data.get("original_to") or "").strip()
 	inbound.original_to = original_to[:140]
+	# Best-effort owner address for the unrecognized panel (original recipient
+	# of a forward, not the forwarder/inbox). Computed once here so the panel
+	# is a plain SELECT — no per-row body parsing at view time.
+	inbound.candidate_address = _candidate_owner_address(
+		email_account, sender, original_to, body
+	)[:140]
 	# Forwarded-email owner resolution (Design §7.3).  For forwards the
 	# ``email_account`` (to) is the destination inbox, not the owner — so we
 	# walk a priority chain to find the real GAM Email.
@@ -2319,6 +2503,7 @@ def _ingest_email_payload(data):
 	code_doc.email = inbound.gam_email
 	code_doc.email_address = email_account
 	code_doc.platform = pattern.platform
+	code_doc.game = pattern.game or ""
 	code_doc.code = code
 	code_doc.email_subject = subject[:140]
 	code_doc.email_from = sender[:140]
@@ -2332,6 +2517,7 @@ def _ingest_email_payload(data):
 
 	inbound.status = "OK"
 	inbound.matched_platform = pattern.platform
+	inbound.game = pattern.game or ""
 	inbound.matched_pattern = pattern.name
 	inbound.email_code = code_doc.name
 	inbound.insert(ignore_permissions=True)
@@ -2494,49 +2680,110 @@ def _resolve_gam_email(email_account, sender, original_to="", body=""):
 
 	Returns ``(gam_email_name, resolved_via)`` or ``(None, None)``.
 	"""
-	candidates = [
-		("original_to", _extract_email_address(original_to)),
-		("email_account", _extract_email_address(email_account)),
-		("sender", _extract_email_address(sender)),
-	]
-	for label, addr in candidates:
+	# Forwarded mail carries the real recipient in body "To:" / original_to.
+	# For direct mail email_account IS the owner. The forwarder (sender) is the
+	# weakest signal (a manual forward where it equals the recipient).
+	inbox = _extract_email_address(email_account)
+	ot = _extract_email_address(original_to)
+	fwd_recipient = _extract_forwarded_recipient(body)
+	chain = []
+	if ot and ot != inbox:
+		chain.append(("original_to", ot))
+	if fwd_recipient and fwd_recipient != inbox:
+		chain.append(("body_to", fwd_recipient))
+	chain.append(("email_account", inbox))
+	chain.append(("sender", _extract_email_address(sender)))
+	for label, addr in chain:
 		if not addr:
 			continue
 		name = frappe.db.get_value("GAM Email", {"address": addr})
 		if name:
 			return name, label
 
-	# Last resort: parse the forwarded "To:" header line from the body.
-	if body:
-		m = re.search(r"(?:^|\n)\s*To:\s*(.+)", body, re.I)
-		if m:
-			addr = _extract_email_address(m.group(1))
-			if addr:
-				name = frappe.db.get_value("GAM Email", {"address": addr})
-				if name:
-					return name, "body_to"
-
 	return None, None
+
+
+def _parse_forwarded_block(text):
+	"""Parse the outermost forwarded header block from body/html text.
+
+	Returns ``{from, to, subject, date}`` of the FIRST forwarded block (the one
+	closest to the platform email — correct for forward-of-forward chains).
+	Handles Outlook (``-----Original Message-----``), Gmail/Apps
+	(``----- Forwarded message -----``) and inline loose ``From:``/``To:`` pairs.
+	"""
+	out = {"from": "", "to": "", "subject": "", "date": ""}
+	if not text:
+		return out
+	marker = re.search(
+		r"(?:[_-]{3,}\s*Original Message\s*[_-]{3,}|[_-]{5,}\s*Forwarded message\s*[_-]{5,}|Begin forwarded message\s*?:|[_-]{20,})",
+		text,
+		re.I,
+	)
+	# Inline loose ``From:``/``To:`` pairs (no marker) still parse from offset 0,
+	# so a divider-less forward resolves correctly too.
+	start = marker.end() if marker else 0
+	region = text[start:start + 1200]
+	labels = {"from": r"From", "to": r"To", "subject": r"Subject", "date": r"(?:Sent|Date)"}
+	for key, label in labels.items():
+		m = re.search(r"(?:^|\n)[ \t]*" + label + r"\s*:\s*(.+)", region, re.I)
+		if m:
+			out[key] = m.group(1).strip()
+	return out
+
+
+def _extract_forwarded_recipient(text):
+	"""Original recipient (``To:``) from a forwarded block — the real owner."""
+	block = _parse_forwarded_block(text)
+	if block.get("to"):
+		addr = _extract_email_address(block["to"])
+		if addr:
+			return addr
+	m = re.search(r"(?:Delivered-To|X-Original-To|To)\s*:\s*(.+)", text or "", re.I)
+	if m:
+		return _extract_email_address(m.group(1))
+	return ""
+
+
+def _candidate_owner_address(email_account, sender, original_to="", body=""):
+	"""Best-effort real owner address for the unrecognized panel.
+
+	Unlike :func:`_resolve_gam_email` this returns an address even when it is
+	not yet a registered GAM Email, so the admin can add it with one click.
+	Priority: worker ``original_to`` → forwarded body ``To:`` (when it differs
+	from both the inbox destination and the forwarder) → forwarder ``from`` →
+	inbox ``email_account``.
+	"""
+	inbox = _extract_email_address(email_account)
+	ot = _extract_email_address(original_to)
+	if ot and ot != inbox:
+		return ot
+	fwd = _extract_forwarded_recipient(body)
+	sender_addr = _extract_email_address(sender)
+	if fwd and fwd != inbox and fwd != sender_addr:
+		return fwd
+	if sender_addr:
+		return sender_addr
+	return inbox
 
 
 def _extract_forwarded_senders(text):
 	"""Pull original-sender addresses from forwarded email content.
 
-	Forwarded messages embed the original headers (From / Reply-To /
-	X-Gm-Original-From) inside the body text. We collect every address on such
-	lines so platform ``sender_patterns`` can still match a forward (e.g. an
-	email forwarded by a personal Hotmail address whose real sender is
-	``@grindinggear.com``).
+	Uses :func:`_parse_forwarded_block` for the outermost ``From:``, then also
+	scans every ``From / Reply-To / X-Gm-Original-From`` line (nested blocks) so
+	platform ``sender_patterns`` still match a forward.
 	"""
 	if not text:
 		return []
 	addrs = []
-	for m in re.finditer(
-		r"(?:X-Gm-Original-From|Reply-To|From)\s*:\s*(.+)",
-		text,
-		re.I,
-	):
-		addr = _extract_email_address(m.group(1))
+	block = _parse_forwarded_block(text)
+	candidates = []
+	if block.get("from"):
+		candidates.append(block["from"])
+	for m in re.finditer(r"(?:X-Gm-Original-From|Reply-To|From)\s*:\s*(.+)", text, re.I):
+		candidates.append(m.group(1))
+	for raw in candidates:
+		addr = _extract_email_address(raw)
 		if addr and addr not in addrs:
 			addrs.append(addr)
 	return addrs
@@ -2711,7 +2958,8 @@ def get_unrecognized_emails():
 	rows = frappe.db.sql(
 		"""
 		SELECT name, email_account, email_from, email_subject,
-		       detected_platform, received_at, resolved_via
+		       detected_platform, game, candidate_address,
+		       received_at, resolved_via
 		FROM `tabGAM Email Inbound Log`
 		WHERE IFNULL(gam_email, '') = ''
 		  AND status IN ('OK', 'NO_MATCH')
@@ -2723,9 +2971,17 @@ def get_unrecognized_emails():
 	)
 	seen = {}
 	for r in rows:
-		candidate = _extract_email_address(r.get("email_from")) or _extract_email_address(r.get("email_account")) or r.get("name")
+		# candidate_address is persisted at ingest (original recipient of a
+		# forward, not the forwarder). Fall back to legacy email_from/inbox
+		# derivation for rows ingested before the field existed.
+		candidate = (
+			(r.get("candidate_address") or "").strip().lower()
+			or _extract_email_address(r.get("email_from"))
+			or _extract_email_address(r.get("email_account"))
+			or r.get("name")
+		)
 		if candidate not in seen:
-			r["candidate_address"] = _extract_email_address(r.get("email_from") or r.get("email_account"))
+			r["candidate_address"] = candidate
 			seen[candidate] = r
 	return list(seen.values())
 
@@ -2807,7 +3063,28 @@ def add_email_from_inbound(inbound_name, provider="Other", notes=None):
 		gam_name = doc.name
 
 	frappe.db.set_value("GAM Email Inbound Log", inbound_name, "gam_email", gam_name)
+	# Backlink codes that arrived BEFORE this GAM Email existed: at ingest time
+	# the owner wasn't registered yet, so the code was created with email=NULL.
+	# Without this, request_code (which filters ``email = ...``) can never see
+	# them even though the code is valid and unexpired.
+	_backlink_orphan_codes(gam_name)
 	return {"name": gam_name, "address": addr}
+
+
+def _backlink_orphan_codes(gam_name):
+	"""Link code rows with email=NULL to ``gam_name`` via their creating inbound log.
+
+	A code is orphaned when it was ingested before the owning GAM Email existed.
+	The creating ``GAM Email Inbound Log`` row carries the now-resolved
+	``gam_email`` (set by add_email_from_inbound / resolution), so we re-link the
+	code through it.
+	"""
+	if not gam_name:
+		return
+	for c in frappe.get_all("GAM Email Code", filters={"email": ["is", "not set"]}, pluck="name"):
+		owner = frappe.db.get_value("GAM Email Inbound Log", {"email_code": c}, "gam_email")
+		if owner == gam_name:
+			frappe.db.set_value("GAM Email Code", c, "email", gam_name)
 
 
 @frappe.whitelist()
@@ -4329,10 +4606,12 @@ def _is_safe_host(host):
 def verify_public_host(host=None):
 	"""Wizard step-2 gate: confirm the public host routes back to this Frappe site.
 
-	Server-side GET ``https://<host>/api/method/ping`` round-trips through the
-	Cloudflare tunnel → nginx → Frappe. ok=True means the host is live and Frappe
-	responds (``{"message":"pong"}``), so the webhook URL is reachable from the
-	Worker. A *connection error* (caught below) almost always means the tunnel is
+	Server-side GET on the actual webhook route
+	(``https://<host>/api/method/gam.api.receive_email_webhook``) round-trips
+	through the Cloudflare tunnel → nginx → Frappe. The secret guard rejects the
+	unauthenticated GET with HTTP 403 — that 403 is itself proof the route
+	resolved, so ``ok=True`` means the webhook URL is reachable from the Worker.
+	A *connection error* (caught below) almost always means the tunnel is
 	down or its Service is mis-set (e.g. ``https://localhost:80`` instead of
 	``http://localhost:80``) — cloudflared then fails the TLS handshake.
 	"""
@@ -4347,11 +4626,16 @@ def verify_public_host(host=None):
 			_("Public Host phai la ten mien cong khai (KHONG duoc la IP noi bo/localhost)."),
 			frappe.PermissionError,
 		)
-	url = f"https://{h}/api/method/ping"
+	# Probe the ACTUAL webhook endpoint (not /api/method/ping, which does not
+	# exist and returned a misleading nginx 404). A GET without the secret is
+	# rejected by the secret guard with HTTP 403 — that 403 is itself proof the
+	# request traversed tunnel → nginx → Frappe and the route resolved. Only a
+	# connection error (status 0) or a 5xx means the tunnel/route is broken.
+	url = f"https://{h}/api/method/gam.api.receive_email_webhook"
 	try:
 		resp = _rq.get(url, timeout=10, allow_redirects=True)
 		body = (resp.text or "")[:300]
-		# Healthy = Frappe responds with a non-5xx body and (in dns_multitenant
+		# Reachable = Frappe answered with a non-5xx body and (in dns_multitenant
 		# mode) not the "site does not exist" 404. With serve_default_site (this
 		# bench) any host that reaches nginx is served by the default site.
 		ok = resp.status_code < 500 and ("does not exist" not in body.lower())
@@ -4504,4 +4788,231 @@ def get_cloudflare_worker_source():
 	except Exception:
 		frappe.local.message_log = []
 		source = ""
+		return {"source": source, "bundled": True}
+	
 	return {"source": source, "bundled": True}
+
+# ============================================================================
+# Security Audit Timeline (unified activity stream)
+# ============================================================================
+_AUDIT_PAGE_CAP = 500  # per-source fetch cap before the in-memory merge/sort
+
+
+def _audit_time_clause(col, date_from, date_to):
+	"""Return (sql_fragment, params) for a date window on ``col``."""
+	clauses, params = [], {}
+	if date_from:
+		clauses.append(f"{col} >= %(df)s")
+		params["df"] = f"{date_from} 00:00:00"
+	if date_to:
+		clauses.append(f"{col} <= %(dt)s")
+		params["dt"] = f"{date_to} 23:59:59"
+	return (" AND " + " AND ".join(clauses)) if clauses else "", params
+
+
+@frappe.whitelist()
+def get_audit_timeline(filters=None, page=1, page_size=30):
+	"""Unified, time-ordered audit stream merging Usage / Code Request / Reveal.
+
+	Each event is normalized to a common schema so the admin can investigate
+	"who did what, to which account/game, from where, in which session".
+	Returns ``{events, total, page, page_size, summary}``.
+	"""
+	_require_gam_admin()
+	filters = frappe.parse_json(filters) if isinstance(filters, str) else (filters or {})
+	page = max(cint(page) or 1, 1)
+	page_size = min(max(cint(page_size) or 30, 1), 200)
+
+	f_user = (filters.get("user") or "").strip().lower()
+	f_account = (filters.get("account") or "").strip()
+	f_game = (filters.get("game") or "").strip()
+	f_platform = (filters.get("platform") or "").strip().lower()
+	f_ip = (filters.get("ip") or "").strip()
+	f_action = (filters.get("action") or "").strip().lower()
+	date_from = filters.get("date_from")
+	date_to = filters.get("date_to")
+
+	events = []
+	# --- Source 1: Account Usage (login/session) ---
+	uw, up = _audit_time_clause("started_at", date_from, date_to)
+	if f_user:
+		uw += " AND used_by = %(u)s"; up["u"] = f_user
+	for r in frappe.db.sql(f"""
+		SELECT name, account, used_by, status, purpose, started_at, ended_at,
+		       end_reason, ip_address, device
+		FROM `tabGAM Account Usage`
+		WHERE 1=1 {uw}
+		ORDER BY started_at DESC
+		LIMIT {_AUDIT_PAGE_CAP}
+	""", {**up}, as_dict=True):
+		events.append({
+			"event_time": r.started_at, "user": r.used_by,
+			"action": "LOGIN", "account_name": r.account,
+			"account_username": frappe.db.get_value("GAM Account", r.account, "username") or "",
+			"game": _resolve_account_game(r.account), "platform": "",
+			"email_address": "", "detail": r.purpose or "",
+			"ip_address": r.ip_address or "", "device": r.device or "",
+			"status": r.status, "duration": _duration(r.started_at, r.ended_at),
+			"usage_lease": r.name, "source_doctype": "GAM Account Usage",
+			"source_name": r.name,
+		})
+
+	# --- Source 2: Code Request Log ---
+	cw, cp = _audit_time_clause("requested_at", date_from, date_to)
+	if f_user:
+		cw += " AND requested_by = %(u)s"; cp["u"] = f_user
+	for r in frappe.db.sql(f"""
+		SELECT name, requested_by, target_account, account_username, game,
+		       platform, account_email_address, code_value, status, ip_address,
+		       usage_lease, requested_at
+		FROM `tabGAM Code Request Log`
+		WHERE 1=1 {cw}
+		ORDER BY requested_at DESC
+		LIMIT {_AUDIT_PAGE_CAP}
+	""", {**cp}, as_dict=True):
+		events.append({
+			"event_time": r.requested_at, "user": r.requested_by,
+			"action": "CODE_REQUEST", "account_name": r.target_account or "",
+			"account_username": r.account_username or "", "game": r.game or "",
+			"platform": r.platform or "", "email_address": r.account_email_address or "",
+			"detail": r.code_value or "", "ip_address": r.ip_address or "",
+			"device": "", "status": r.status, "duration": None,
+			"usage_lease": r.usage_lease or "", "source_doctype": "GAM Code Request Log",
+			"source_name": r.name,
+		})
+
+	# --- Source 3: Reveal Log (resolve account context in-memory) ---
+	rw, rp = _audit_time_clause("viewed_at", date_from, date_to)
+	if f_user:
+		rw += " AND viewed_by = %(u)s"; rp["u"] = f_user
+	rrows = frappe.db.sql(f"""
+		SELECT name, action, viewed_by, target_doctype, target_name, fieldname,
+		       ip_address, usage_lease, viewed_at
+		FROM `tabGAM Reveal Log`
+		WHERE 1=1 {rw}
+		ORDER BY viewed_at DESC
+		LIMIT {_AUDIT_PAGE_CAP}
+	""", {**rp}, as_dict=True)
+	# batch-resolve account for reveal rows whose target is an account
+	acc_targets = [x.target_name for x in rrows if x.target_doctype == "GAM Account" and x.target_name]
+	acc_map = {
+		a.name: a for a in frappe.get_all(
+			"GAM Account", filters=[["name", "in", acc_targets]],
+			fields=["name", "username", "email", "platform"], as_list=False,
+		)
+	} if acc_targets else {}
+	for r in rrows:
+		acc = acc_map.get(r.target_name) if r.target_doctype == "GAM Account" else None
+		acc_name = acc.name if acc else ""
+		events.append({
+			"event_time": r.viewed_at, "user": r.viewed_by,
+			"action": (r.action or "REVEAL"), "account_name": acc_name,
+			"account_username": acc.username if acc else "",
+			"game": _resolve_account_game(acc_name) if acc_name else "",
+			"platform": acc.platform if acc else "",
+			"email_address": "", "detail": r.fieldname or "",
+			"ip_address": r.ip_address or "", "device": "",
+			"status": "", "duration": None,
+			"usage_lease": r.usage_lease or "", "source_doctype": "GAM Reveal Log",
+			"source_name": r.name,
+		})
+
+	# --- Apply remaining filters (not pushed into SQL) ---
+	def keep(e):
+		if f_account and e.get("account_name") != f_account:
+			return False
+		if f_game and (e.get("game") or "") != f_game:
+			return False
+		if f_platform and (e.get("platform") or "").lower() != f_platform:
+			return False
+		if f_ip and f_ip not in (e.get("ip_address") or ""):
+			return False
+		if f_action and (e.get("action") or "").lower() != f_action:
+			return False
+		return True
+
+	events = [e for e in events if keep(e)]
+	events.sort(key=lambda e: e["event_time"] or "", reverse=True)
+	# Tag anomalies (advisory flags) before pagination so the filter + summary
+	# see the full filtered set.
+	anomaly_counts = _tag_anomalies(events)
+	if filters.get("anomaly"):
+		events = [e for e in events if e.get("anomaly")]
+	total = len(events)
+	start = (page - 1) * page_size
+	page_events = events[start:start + page_size]
+
+	summary = _audit_summary(events)
+	summary["anomalies"] = anomaly_counts
+	return {
+		"events": page_events,
+		"total": total,
+		"page": page,
+		"page_size": page_size,
+		"summary": summary,
+	}
+
+
+def _tag_anomalies(events):
+	"""Advisory anomaly flags for security triage (never blocking).
+
+	Sets ``event["anomaly"]`` (list of flag codes) and returns a counts dict.
+	Rules:
+	  * ``dual_ip``      — same account logged in from >1 distinct IP.
+	  * ``code_without_checkout``   — code requested with no ``usage_lease``.
+	  * ``reveal_outside_session``  — reveal/copy with no ``usage_lease``.
+	"""
+	from collections import defaultdict
+	account_ips = defaultdict(set)
+	for e in events:
+		if e.get("action") == "LOGIN" and e.get("account_name") and e.get("ip_address"):
+			account_ips[e["account_name"]].add(e["ip_address"])
+	dual = {a for a, ips in account_ips.items() if len(ips) > 1}
+	counts = {"dual_ip": 0, "code_without_checkout": 0, "reveal_outside_session": 0}
+	for e in events:
+		flags = []
+		if e.get("account_name") in dual and e.get("action") == "LOGIN":
+			flags.append("dual_ip")
+		if e.get("action") == "CODE_REQUEST" and not e.get("usage_lease"):
+			flags.append("code_without_checkout")
+		if e.get("action") in ("REVEAL", "COPY") and not e.get("usage_lease"):
+			flags.append("reveal_outside_session")
+		if flags:
+			e["anomaly"] = flags
+			for f in flags:
+				counts[f] += 1
+	return counts
+
+
+def _duration(started, ended):
+	"""Seconds between started and ended, or None."""
+	if not started or not ended:
+		return None
+	try:
+		return int((ended - started).total_seconds())
+	except Exception:
+		return None
+
+
+def _audit_summary(events):
+	"""Lightweight aggregate for the audit header cards."""
+	from collections import Counter
+	by_action = Counter((e.get("action") or "") for e in events)
+	users = {(e.get("user") or "") for e in events if e.get("user")}
+	accounts = {(e.get("account_name") or "") for e in events if e.get("account_name")}
+	ips = {(e.get("ip_address") or "") for e in events if e.get("ip_address")}
+	return {
+		"total": len(events),
+		"by_action": dict(by_action),
+		"distinct_users": len(users),
+		"distinct_accounts": len(accounts),
+		"distinct_ips": len(ips),
+	}
+
+
+@frappe.whitelist()
+def export_audit_timeline(filters=None):
+	"""Return ALL matching audit events (no pagination) for CSV/Excel export."""
+	_require_gam_admin()
+	res = get_audit_timeline(filters=filters, page=1, page_size=100000)
+	return {"events": res["events"], "total": res["total"]}

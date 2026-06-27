@@ -95,3 +95,33 @@ def flag_expiring_accounts():
 	)
 	if due:
 		emit_renewals_changed()
+
+
+def archive_audit_logs():
+	"""Retention monitor for security audit logs (daily).
+
+	Counts rows in the three audit doctypes older than
+	``GAM Settings.audit_log_retention_days`` and logs a warning. It NEVER
+	deletes — audit trails must be preserved for accountability; archival
+	(export → cold store) is a manual operator step triggered by this signal.
+	"""
+	from frappe.utils import add_to_date
+	from frappe.utils import cint
+
+	settings = frappe.get_single("GAM Settings")
+	days = cint(settings.get("audit_log_retention_days")) or 365
+	threshold = add_to_date(now_datetime(), days=-days)
+	stats = {}
+	for doctype, col in (
+		("GAM Code Request Log", "requested_at"),
+		("GAM Reveal Log", "viewed_at"),
+		("GAM Account Usage", "started_at"),
+	):
+		stats[doctype] = frappe.db.count(doctype, filters={col: ["<", threshold]})
+	total = sum(stats.values())
+	if total:
+		frappe.logger("gam").warning(
+			f"GAM audit retention: {total} rows older than {days}d (export+archive "
+			f"manually — never auto-deleted). breakdown={stats}"
+		)
+	return {"threshold_days": days, "older_than_threshold": stats, "total": total}

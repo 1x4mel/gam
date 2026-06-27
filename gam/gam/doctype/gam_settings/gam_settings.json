@@ -44,6 +44,14 @@
    "description": "Bật cảnh báo (không block cứng) khi user đăng xuất mà còn tài khoản đang checkin."
   },
   {
+   "fieldname": "audit_log_retention_days",
+   "fieldtype": "Int",
+   "label": "Audit Log Retention (days)",
+   "default": "365",
+   "description": "Số ngày giữ log audit (Code Request / Reveal / Account Usage). Scheduler sẽ cảnh báo khi có dòng cũ hơn ngưỡng — KHÔNG tự xoá (bảo mật).",
+   "non_negative": 1
+  },
+  {
    "fieldname": "grant_default_policy",
    "fieldtype": "Select",
    "label": "Access Grant Default Policy",

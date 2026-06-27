@@ -100,6 +100,19 @@
    "label": "GAM Email Address"
   },
   {
+   "fieldname": "candidate_address",
+   "fieldtype": "Data",
+   "label": "Candidate Address",
+   "description": "Best-effort owner address (original recipient) for the unrecognized panel."
+  },
+  {
+   "fieldname": "game",
+   "fieldtype": "Link",
+   "label": "Game",
+   "options": "GAM Game",
+   "description": "Game-level classification (NULL = platform-level)."
+  },
+  {
    "fieldname": "ignored",
    "fieldtype": "Check",
    "label": "Ignored",

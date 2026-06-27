@@ -23,7 +23,11 @@ CODE_PATTERNS = [
 		"platform": "BATTLENET",
 		"sender_pattern": r"@(?:battle\.net|blizzard\.com)",
 		"subject_keywords": "code,security,login,verification",
-		"code_regex": r"(?:code|auth|verification)[:\s]+(\d{6,8})\b",
+		# Battle.net codes are 6-8 char ALPHANUMERIC (e.g. ``G5WDJ8``), never
+		# digits-only — the old ``\d{6,8}`` matched nothing and every real email
+		# landed as NO_MATCH. The keyword proximity + 6-8 length keeps it safe;
+		# the code may sit inline (``code: 482917``) or alone on its own line.
+		"code_regex": r"(?:code|auth|verification)[:\s]+([A-Z0-9]{6,8})\b",
 		"ttl_minutes": 10,
 		"priority": 10,
 	},
@@ -81,6 +85,11 @@ def upgrade_code_patterns():
 		"POE": {
 			"code_regex": r"(?<![\w/.-])([0-9A-Za-z]{3}-[0-9A-Za-z]{3}-[0-9A-Za-z]{4})(?![\w-])",
 			"subject_keywords": "path of exile,exile,code,verification,login,locked,location",
+		},
+		# Battle.net codes are 6-8 char ALPHANUMERIC (e.g. ``G5WDJ8``); the
+		# original digits-only ``\d{6,8}`` never matched a real code.
+		"BATTLENET": {
+			"code_regex": r"(?:code|auth|verification)[:\s]+([A-Z0-9]{6,8})\b",
 		},
 	}
 	for platform, fields in updates.items():

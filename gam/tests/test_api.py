@@ -197,6 +197,130 @@ class TestRequestCode(FrappeTestCase):
 		self.assertEqual(res["status"], "ok")
 		self.assertEqual(res["code"], "CD34E")
 
+	def _ensure_game(self, game_name):
+		name = frappe.db.get_value("GAM Game", {"game_name": game_name})
+		if name:
+			return name
+		return frappe.get_doc(
+			{"doctype": "GAM Game", "game_name": game_name}
+		).insert(ignore_permissions=True).name
+
+	def test_game_aware_claim_prefers_game_level_code(self):
+		# A standalone game account (POE) must prefer a game-level code over a
+		# platform-level fallback sharing the same email.
+		now = now_datetime()
+		poe_game = self._ensure_game("POE")
+		self._make_code("PLAT00", platform="POE")  # platform-level (game NULL)
+		frappe.get_doc(
+			{
+				"doctype": "GAM Email Code",
+				"email": self.email,
+				"email_address": TEST_ADDRESS,
+				"platform": "POE",
+				"code": "GAME11",
+				"game": poe_game,
+				"received_at": now,
+				"expires_at": add_to_date(now, minutes=10),
+				"status": "AVAILABLE",
+			}
+		).insert(ignore_permissions=True)
+		claimed = api._claim_latest_code(self.email, "POE", now, poe_game)
+		self.assertEqual(claimed["code"], "GAME11")
+
+	def test_game_aware_claim_falls_back_to_platform_level(self):
+		# A platform child (e.g. Diablo IV under Battle.net) gets the shared
+		# platform-level code even though its bound game has no exact match.
+		now = now_datetime()
+		self._make_code("BTNET0", platform="BATTLENET")  # game NULL
+		claimed = api._claim_latest_code(self.email, "BATTLENET", now, self._ensure_game("Diablo IV"))
+		self.assertEqual(claimed["code"], "BTNET0")
+
+
+class TestForwardedHeaderParsing(FrappeTestCase):
+	"""Forwarded-block parsing + original-recipient resolution (no DB needed)."""
+
+	def test_parse_outlook_underscore_divider_block(self):
+		# The real Battle.net forward uses a 32-underscore divider.
+		body = (
+			"________________________________\n"
+			"From: Battle.net <noreply@battle.net>\n"
+			"To: MERISEDE3379@HOTMAIL.COM <MERISEDE3379@HOTMAIL.COM>\n"
+			"Subject: Battle.net Account Verification\n\n"
+			"Here's your security code:\n\nG5WDJ8\n"
+		)
+		block = api._parse_forwarded_block(body)
+		self.assertIn("merisede3379", block["to"].lower())
+		self.assertIn("noreply@battle.net", block["from"].lower())
+
+	def test_parse_outlook_original_message_block(self):
+		body = (
+			"-----Original Message-----\n"
+			"From: Path of Exile <support@grindinggear.com>\n"
+			"To: TrishPavlica322@hotmail.com\n"
+			"Subject: Path of Exile Account Unlock Code\n\n"
+			"cc3-e71-607c\n"
+		)
+		block = api._parse_forwarded_block(body)
+		self.assertEqual(api._extract_email_address(block["to"]), "trishpavlica322@hotmail.com")
+		self.assertEqual(api._extract_email_address(block["from"]), "support@grindinggear.com")
+
+	def test_candidate_auto_forward_returns_recipient(self):
+		# Battle.net auto-forward via a relay: body To: = real owner.
+		body = (
+			"From: Battle.net <noreply@battle.net>\n"
+			"To: MERISEDE3379@HOTMAIL.COM\n\n"
+			"security code: G5WDJ8\n"
+		)
+		owner = api._candidate_owner_address(
+			"gam-inbox@example.com", "noreply@hotmail.com", "", body
+		)
+		self.assertEqual(owner, "merisede3379@hotmail.com")
+
+	def test_candidate_manual_forward_returns_forwarder(self):
+		# POE manual forward: body To: == forwarder → return the forwarder.
+		body = (
+			"From: Path of Exile <support@grindinggear.com>\n"
+			"To: TrishPavlica322@hotmail.com\n\n"
+			"cc3-e71-607c\n"
+		)
+		owner = api._candidate_owner_address(
+			"gam-inbox@example.com", "TrishPavlica322@hotmail.com", "", body
+		)
+		self.assertEqual(owner, "trishpavlica322@hotmail.com")
+
+	def test_candidate_prefers_worker_original_to(self):
+		owner = api._candidate_owner_address(
+			"gam-inbox@example.com", "noreply@hotmail.com",
+			"real-owner@example.com", "From: x@y.com\nTo: z@y.com\n",
+		)
+		self.assertEqual(owner, "real-owner@example.com")
+
+
+class TestBattlenetAlphanumericRegex(FrappeTestCase):
+	"""The real Battle.net code is alphanumeric (G5WDJ8), not digits-only."""
+
+	@classmethod
+	def setUpClass(cls):
+		super().setUpClass()
+		from gam.setup import seed_code_patterns, upgrade_code_patterns
+		seed_code_patterns()
+		# The seed is insert-only; upgrade patches existing rows (e.g. the old
+		# digits-only BATTLENET regex) so the test sees the fixed pattern.
+		upgrade_code_patterns()
+
+	def test_real_battlenet_code_on_its_own_line(self):
+		# Mirrors the real email: code isolated on its own line after the prompt.
+		body = (
+			"Hello!\n\nHere's your security code:\n\n"
+			"G5WDJ8\n\nPlease verify soon!\n"
+		)
+		p = api._match_pattern(
+			"noreply@battle.net", "Battle.net Account Verification", body
+		)
+		self.assertIsNotNone(p, "BATTLENET pattern must match alphanumeric codes")
+		self.assertEqual(p.platform, "BATTLENET")
+		self.assertEqual(p.extracted, "G5WDJ8")
+
 
 class TestCheckoutLease(FrappeTestCase):
 	def setUp(self):
@@ -637,3 +761,76 @@ class TestAccountRoleGameReflow(FrappeTestCase):
 		self.assertIn("BOOSTER", sections)
 		games = [g["game"] for g in sections["BOOSTER"]]
 		self.assertIn(self.game_a, games)
+
+
+class TestAuditTimeline(FrappeTestCase):
+	"""Security-audit capture helpers + unified timeline (Phase 1/2)."""
+
+	def setUp(self):
+		super().setUp()
+		frappe.set_user("Administrator")
+		purge_fixtures()
+		self.email = make_email()
+		self.account = make_account("STEAM", TEST_USERNAME, self.email)
+
+	def test_capture_request_context_returns_strings(self):
+		ctx = api._capture_request_context()
+		self.assertIn("ip", ctx)
+		self.assertIn("user_agent", ctx)
+		self.assertIn("device", ctx)
+		self.assertTrue(isinstance(ctx["ip"], str))
+
+	def test_parse_device_labels(self):
+		self.assertIn("Chrome", api._parse_device("Mozilla/5.0 Chrome/120 Windows NT"))
+		self.assertIn("iOS", api._parse_device("iPhone Safari"))
+		self.assertEqual(api._parse_device(""), "")
+
+	def test_active_lease_resolves_checkout(self):
+		self.assertIsNone(api._active_lease("Administrator", self.account))
+		usage = api.checkout_account(self.account, purpose="LOGIN", lease_minutes=60)
+		self.assertEqual(api._active_lease("Administrator", self.account), usage["name"])
+
+	def test_timeline_merges_sources_and_summarizes(self):
+		api.checkout_account(self.account, purpose="LOGIN", lease_minutes=60)
+		now = now_datetime()
+		frappe.get_doc({
+			"doctype": "GAM Email Code", "email": self.email, "email_address": TEST_ADDRESS,
+			"platform": "STEAM", "code": "AUD1", "received_at": now,
+			"expires_at": add_to_date(now, minutes=10), "status": "AVAILABLE",
+		}).insert(ignore_permissions=True)
+		api.request_code(account_name=self.account)
+		res = api.get_audit_timeline({"account": self.account}, 1, 50)
+		actions = {e["action"] for e in res["events"]}
+		self.assertIn("LOGIN", actions)
+		self.assertIn("CODE_REQUEST", actions)
+		self.assertGreaterEqual(res["total"], 2)
+		self.assertIn("by_action", res["summary"])
+
+
+class TestAuditAnomalies(FrappeTestCase):
+	"""Advisory anomaly flags on the audit timeline (Phase 4.1)."""
+
+	def test_code_without_checkout_flagged(self):
+		# A code request with no active lease is flagged.
+		ev = [{"action": "CODE_REQUEST", "usage_lease": "", "account_name": "A"}]
+		counts = api._tag_anomalies(ev)
+		self.assertEqual(ev[0]["anomaly"], ["code_without_checkout"])
+		self.assertEqual(counts["code_without_checkout"], 1)
+
+	def test_reveal_outside_session_flagged(self):
+		ev = [{"action": "REVEAL", "usage_lease": "", "account_name": "A"}]
+		api._tag_anomalies(ev)
+		self.assertIn("reveal_outside_session", ev[0]["anomaly"])
+
+	def test_dual_ip_flagged(self):
+		ev = [
+			{"action": "LOGIN", "account_name": "A", "ip_address": "1.1.1.1"},
+			{"action": "LOGIN", "account_name": "A", "ip_address": "2.2.2.2"},
+		]
+		api._tag_anomalies(ev)
+		self.assertTrue(all("dual_ip" in e["anomaly"] for e in ev))
+
+	def test_normal_events_not_flagged(self):
+		ev = [{"action": "CODE_REQUEST", "usage_lease": "LEASE1", "account_name": "A"}]
+		api._tag_anomalies(ev)
+		self.assertNotIn("anomaly", ev[0])

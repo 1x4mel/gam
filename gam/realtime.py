@@ -5,12 +5,26 @@ def emit_new_code(platform=None, email_code=None):
 	"""Broadcast that a fresh verification code landed.
 
 	The gam-ui SPA listens on `gam_new_code` (see composables/useRealtime.js)
-	and shows a toast + refreshes the dashboard.
+	and shows a toast + refreshes the dashboard. The owning ``email`` (GAM Email
+	name) is included so each account card can match it against its own email and
+	blink its "Code" button — WITHOUT exposing the code value itself (still
+	fetched on demand via the audited request_code endpoint).
 	"""
+	email = None
+	if email_code:
+		try:
+			email = frappe.db.get_value("GAM Email Code", email_code, "email")
+		except Exception:
+			email = None
 	try:
 		frappe.publish_realtime(
 			"gam_new_code",
-			{"platform": platform, "code_platform": platform, "email_code": email_code},
+			{
+				"platform": platform,
+				"code_platform": platform,
+				"email_code": email_code,
+				"email": email,
+			},
 			broadcast=True,
 		)
 	except Exception:

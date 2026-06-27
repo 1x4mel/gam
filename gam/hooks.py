@@ -283,6 +283,7 @@ scheduler_events = {
 	],
 	"daily": [
 		"gam.tasks.flag_expiring_accounts",
+		"gam.tasks.archive_audit_logs",
 	],
 	"cron": {
 		"*/5 * * * *": ["gam.tasks.expire_email_codes"],

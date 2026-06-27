@@ -31,6 +31,18 @@
    "description": "Secret key for 2FA / Authenticator app."
   },
   {
+   "fieldname": "ign",
+   "fieldtype": "Data",
+   "label": "IGN",
+   "description": "In-Game Name. Only meaningful for GAME-level nodes."
+  },
+  {
+   "fieldname": "btag",
+   "fieldtype": "Data",
+   "label": "Btag",
+   "description": "BattleTag (e.g. Name#1234). Only meaningful for GAME-level nodes."
+  },
+  {
    "fieldname": "email",
    "fieldtype": "Link",
    "label": "Email",

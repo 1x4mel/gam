@@ -18,6 +18,14 @@
    "description": "Fallback if not matched to a GAM Email."
   },
   {
+   "fieldname": "game",
+   "fieldtype": "Link",
+   "label": "Game",
+   "options": "GAM Game",
+   "description": "Game-level code (NULL = platform-level, shared across games).",
+   "in_list_view": 1
+  },
+  {
    "fieldname": "platform",
    "fieldtype": "Select",
    "label": "Platform",
@@ -121,5 +129,5 @@
  "sort_order": "DESC",
  "track_changes": 1,
  "title_field": "code",
- "search_fields": "email,code,platform"
+ "search_fields": "email,code,platform,game"
 }

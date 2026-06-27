@@ -48,6 +48,13 @@
    "label": "User Agent"
   },
   {
+   "fieldname": "usage_lease",
+   "fieldtype": "Link",
+   "label": "Usage Lease",
+   "options": "GAM Account Usage",
+   "description": "The active checkout session this reveal belongs to (session correlation key)."
+  },
+  {
    "fieldname": "viewed_at",
    "fieldtype": "Datetime",
    "label": "Viewed At",

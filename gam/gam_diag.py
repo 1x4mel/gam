@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 
 import frappe
-from frappe.utils import now_datetime
+from frappe.utils import now_datetime, cint
 
 
 def _section(title):
@@ -128,6 +128,131 @@ def diag_test_new_api():
     _section("get_account_notes (read)")
     n = frappe.call("gam.api.get_account_notes", account="efquhacv6m")
     print("  notes:", len(n))
+
+
+def diag_webhook():
+    """End-to-end webhook-receiver diagnostic.
+
+    Verifies that the inbound email webhook (gam.api.receive_email_webhook)
+    is functional: config state -> secret guard -> ingestion -> counters.
+
+    Run: bench --site erp.local execute gam_diag.diag_webhook
+    """
+    from frappe.utils import now_datetime
+    from frappe.utils.data import add_to_date
+
+    try:
+        from gam import api as gam_api
+    except Exception as e:  # noqa: BLE001
+        print("FATAL: cannot import gam.api:", repr(e))
+        return
+
+    cfg = frappe.get_doc("GAM Webhook Config", "GAM Webhook Config")
+    secret = cfg.get_password("webhook_secret") or ""
+
+    _section("WEBHOOK CONFIG (GAM Webhook Config singleton)")
+    print("  is_active            :", bool(cint(cfg.is_active)))
+    print("  webhook_secret_set   :", bool(secret) and set(secret) != {"*"})
+    print("  public_host          :", cfg.public_host or "(unset)")
+    print("  webhook_email        :", cfg.webhook_email or "(unset)")
+    print("  cf_worker_deployed   :", bool(cint(cfg.cf_worker_deployed)))
+    print("  cf_email_routing_done:", bool(cint(cfg.cf_email_routing_done)))
+    print("  total_received       :", cfg.total_received)
+    print("  last_status          :", cfg.last_status or "(none)")
+    print("  last_received_at     :", cfg.last_received_at or "(none)")
+
+    if not cint(cfg.is_active):
+        print("\n  >> is_active = 0 -> endpoint will reject every webhook with 403.")
+        print("     Turn it on in the WebhookConfigView master toggle before continuing.")
+    if not (bool(secret) and set(secret) != {"*"}):
+        print("\n  >> webhook_secret not set -> endpoint will reject with 403.")
+        print("     Set a secret in GAM Webhook Config + match it in the Worker (GAM_WEBHOOK_SECRET).")
+
+    # ---- (a) negative test: wrong secret must be rejected -----------------
+    _section("GUARD: wrong secret rejected?")
+    class _BadReq:
+        method = "POST"
+        headers = {"X-Webhook-Secret": "definitely-wrong"}
+        form = None
+        def get_json(self, silent=True):
+            return {"email_account": "x", "from": "x", "subject": "x", "body": "x"}
+
+    frappe.local.request = _BadReq()
+    try:
+        frappe.set_user("Guest")
+        gam_api.receive_email_webhook()
+        print("  FAIL: endpoint accepted a WRONG secret (should have thrown).")
+    except frappe.PermissionError:
+        print("  OK: wrong secret -> PermissionError raised (guard works).")
+    except Exception as e:  # noqa: BLE001
+        print("  WARN: wrong-secret path raised unexpected:", repr(e))
+    finally:
+        frappe.set_user("Administrator")
+        del frappe.local.request
+
+    # ---- (b) positive test: real ingestion with correct secret -----------
+    if bool(secret) and set(secret) != {"*"}:
+        _section("INGEST: real payload with correct secret (in-process)")
+        msg_id = "diag-%s" % now_datetime().strftime("%Y%m%d%H%M%S%f")
+        payload = {
+            "email_account": "diag-test@example.com",
+            "from": "noreply@steampowered.com",
+            "subject": "Your Steam Guard code",
+            "body": "Your Steam Guard code is 482931",
+            "html": "",
+            "message_id": msg_id,
+            "received_at": now_datetime().isoformat(),
+        }
+
+        class _GoodReq:
+            method = "POST"
+            headers = {"X-Webhook-Secret": secret}
+            form = None
+            def get_json(self, silent=True):
+                return payload
+
+        frappe.local.request = _GoodReq()
+        try:
+            res = gam_api.receive_email_webhook()
+            print("  endpoint returned:", json.dumps(res, default=str))
+            print("  -> ingestion path executed successfully (status above: ok/no_match/duplicate).")
+        except Exception as e:  # noqa: BLE001
+            print("  FAIL: ingestion threw:", repr(e))
+            frappe.db.rollback()
+        finally:
+            del frappe.local.request
+
+        # rollback so the diagnostic leaves no permanent test row
+        frappe.db.rollback()
+    else:
+        print("\n(skipping ingest test: webhook_secret not configured)")
+
+    # ---- (c) latest inbound log rows --------------------------------------
+    _section("LATEST 5 GAM Email Inbound Log rows")
+    rows = frappe.db.sql(
+        """SELECT name, status, detected_platform, email_from,
+                  received_at, creation
+           FROM `tabGAM Email Inbound Log`
+           ORDER BY creation DESC LIMIT 5""",
+        as_dict=True,
+    )
+    if not rows:
+        print("  (no inbound rows yet — a real/worker email has never landed)")
+    for r in rows:
+        print("  %s | %s | %s | %s | recv=%s"
+              % (r.name, r.status, r.detected_platform or "-", r.email_from, r.received_at))
+
+    # ---- (d) tunnel reachability (optional) ------------------------------
+    if cfg.public_host:
+        _section("TUNNEL: verify_public_host (cloudflared -> nginx -> Frappe)")
+        try:
+            out = gam_api.verify_public_host(host=cfg.public_host)
+            print("  ok     :", out.get("ok"))
+            print("  status :", out.get("status"))
+            print("  url    :", out.get("url"))
+            print("  detail :", (out.get("detail") or "")[:200])
+        except Exception as e:  # noqa: BLE001
+            print("  verify_public_host threw (admin-only?):", repr(e))
 
 
 def diag_all():

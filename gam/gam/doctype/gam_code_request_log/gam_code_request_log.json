@@ -61,6 +61,47 @@
    "in_list_view": 1
   },
   {
+   "fieldname": "game",
+   "fieldtype": "Link",
+   "label": "Game",
+   "options": "GAM Game",
+   "description": "Game-level context (NULL = platform-level)."
+  },
+  {
+   "fieldname": "account_username",
+   "fieldtype": "Data",
+   "label": "Account Username",
+   "description": "Denormalized so the log is self-contained for audit (no N+1 lookup)."
+  },
+  {
+   "fieldname": "account_email_address",
+   "fieldtype": "Data",
+   "label": "Account Email Address",
+   "description": "Denormalized owner email at request time."
+  },
+  {
+   "fieldname": "usage_lease",
+   "fieldtype": "Link",
+   "label": "Usage Lease",
+   "options": "GAM Account Usage",
+   "description": "The active checkout session this request belongs to (session correlation key)."
+  },
+  {
+   "fieldname": "ip_address",
+   "fieldtype": "Data",
+   "label": "IP Address"
+  },
+  {
+   "fieldname": "user_agent",
+   "fieldtype": "Small Text",
+   "label": "User Agent"
+  },
+  {
+   "fieldname": "code_expires_at",
+   "fieldtype": "Datetime",
+   "label": "Code Expires At"
+  },
+  {
    "fieldname": "notes",
    "fieldtype": "Small Text",
    "label": "Notes"
